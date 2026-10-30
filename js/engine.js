@@ -399,10 +399,14 @@ const Engine = (() => {
     }
     const e = pool.get(c.id);
     if (!e || e.v.readyState < 2 || !e.v.videoWidth) return null;
-    return { img: e.v, w: e.v.videoWidth, h: e.v.videoHeight };
+    return { img: e.v, w: e.v.videoWidth, h: e.v.videoHeight, rot: 0 };
   }
 
-  function drawFrame(target, k, fr) {
+  /**
+   * frame fr の絵を target に描く。k = 出力の画素 / 作品の画素。
+   * getSource(c) → {img, w, h, rot}（w・h は回転前、rot は素材の回転・時計回りの度）。書き出しは別の読み手を渡す。
+   */
+  function drawFrame(target, k, fr, getSource = sourceOf) {
     target.setTransform(1, 0, 0, 1, 0, 0);
     target.fillStyle = '#000';
     target.fillRect(0, 0, target.canvas.width, target.canvas.height);
@@ -416,14 +420,17 @@ const Engine = (() => {
         target.fillRect(0, 0, p.width, p.height);
         continue;
       }
-      const s = sourceOf(c);
+      const s = getSource(c);
       if (!s) continue;
-      const pl = placement(c, s.w, s.h);
+      const side = s.rot === 90 || s.rot === 270;
+      const pl = placement(c, side ? s.h : s.w, side ? s.w : s.h);
       target.setTransform(k, 0, 0, k, 0, 0);
       target.translate(pl.cx, pl.cy);
       if (pl.rot) target.rotate(pl.rot * Math.PI / 180);
+      if (s.rot) target.rotate(s.rot * Math.PI / 180);
       target.globalAlpha = alpha;
-      try { target.drawImage(s.img, -pl.w / 2, -pl.h / 2, pl.w, pl.h); } catch { /* 絵がまだ無い */ }
+      const dw = side ? pl.h : pl.w, dh = side ? pl.w : pl.h;
+      try { target.drawImage(s.img, -dw / 2, -dh / 2, dw, dh); } catch { /* 絵がまだ無い */ }
     }
     target.globalAlpha = 1;
     target.setTransform(1, 0, 0, 1, 0, 0);

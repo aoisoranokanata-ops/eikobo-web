@@ -141,5 +141,63 @@ const Store = (() => {
     return false;
   }
 
-  return { get, all, put, del, writeFile, readFile, removeFile, estimate, persist, hasOpfs };
+  /**
+   * 書き出し用: OPFS の eikobo-web/export/<name> へ順に書く。{write(u8), close() → File, abort()}
+   * OPFS が使えない時はメモリに溜める（長い動画では iPad のメモリが足りなくなるかもしれない）。
+   */
+  async function openStream(name) {
+    const dir = ['eikobo-web', 'export'];
+    if (hasOpfs) {
+      try {
+        const w = new Worker('js/stream-worker.js');
+        let seq = 0;
+        const waiting = new Map();
+        w.onmessage = (e) => {
+          const r = waiting.get(e.data.id);
+          if (!r) return;
+          waiting.delete(e.data.id);
+          if (e.data.error) r.reject(Object.assign(new Error(e.data.error), { name: e.data.name || 'Error' }));
+          else r.resolve(e.data);
+        };
+        const call = (msg, transfer) => new Promise((resolve, reject) => {
+          const id = ++seq;
+          waiting.set(id, { resolve, reject });
+          w.postMessage({ ...msg, id }, transfer || []);
+        });
+        await call({ cmd: 'open', dir, name });
+        return {
+          write: (u8) => {
+            const copy = u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength ? u8.buffer : u8.slice().buffer;
+            return call({ cmd: 'write', data: copy }, [copy]);
+          },
+          async close() {
+            await call({ cmd: 'close' });
+            w.terminate();
+            let d = await navigator.storage.getDirectory();
+            for (const part of dir) d = await d.getDirectoryHandle(part);
+            return (await d.getFileHandle(name)).getFile();
+          },
+          async abort() { try { await call({ cmd: 'abort' }); } catch { /* 済み */ } w.terminate(); await removeExport(name); },
+        };
+      } catch (err) { console.warn('OPFS に書けないのでメモリに溜めます', err); }
+    }
+    const parts = [];
+    return {
+      write: async (u8) => { parts.push(u8.slice()); },
+      close: async () => new Blob(parts),
+      abort: async () => { parts.length = 0; },
+    };
+  }
+
+  async function removeExport(name) {
+    if (!hasOpfs) return;
+    try {
+      let d = await navigator.storage.getDirectory();
+      d = await (await d.getDirectoryHandle('eikobo-web')).getDirectoryHandle('export');
+      if (name) await d.removeEntry(name);
+      else for await (const k of d.keys()) await d.removeEntry(k);
+    } catch { /* 無ければよい */ }
+  }
+
+  return { get, all, put, del, writeFile, readFile, removeFile, estimate, persist, hasOpfs, openStream, removeExport };
 })();

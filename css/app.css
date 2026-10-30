@@ -162,6 +162,8 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 .wide-input { width: 100%; }
 .err-list { margin: 0; padding-left: 18px; font-size: 13px; }
 .progress-label { font-size: 13px; color: #c4c8d0; min-height: 20px; overflow-wrap: anywhere; }
+.progress-note { margin-top: 10px; }
+.export-preview { display: block; width: 100%; max-height: 50vh; background: #000; border-radius: 8px; margin-top: 10px; }
 .progress-bar { height: 8px; background: #14161a; border-radius: 4px; overflow: hidden; margin-top: 8px; }
 .progress-bar > div { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
 

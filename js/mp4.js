@@ -250,12 +250,12 @@ const Mp4 = (() => {
     }
     const ctts = child(dv, stbl, 'ctts');
     if (ctts) {
+      // ずれは常に符号付きで読む（QuickTime は version 0 でも負の値を書く。iPhone や Final Cut の MOV）
       const n = dv.getUint32(ctts.start + 4);
-      const v = fullBoxVersion(dv, ctts);
       t.ctts = [];
       for (let i = 0; i < n; i++) {
         const p = ctts.start + 8 + i * 8;
-        t.ctts.push([dv.getUint32(p), v === 1 ? dv.getInt32(p + 4) : dv.getUint32(p + 4)]);
+        t.ctts.push([dv.getUint32(p), dv.getInt32(p + 4)]);
       }
     }
     const stss = child(dv, stbl, 'stss');
@@ -440,7 +440,53 @@ const Mp4 = (() => {
     throw new Error('この音声の形式（' + tk.codec + '）は読めません');
   }
 
-  return { parse, decodeAudio, chunkList, topBoxes };
+  /**
+   * 標本（コマ）ごとの表。並びはデコード順。pts は表示時刻（秒、編集リストのずれ込み）。
+   */
+  function sampleTable(tk) {
+    const t = tk.table;
+    const n = t.sampleCount || 0;
+    const offset = new Float64Array(n), size = new Uint32Array(n), pts = new Float64Array(n), sync = new Uint8Array(n);
+    for (let i = 0; i < n; i++) size[i] = t.sizes ? t.sizes[i] : t.sampleSize;
+    for (const [pos, first, per] of chunkList(t)) {
+      let o = pos;
+      for (let s = first; s < first + per && s < n; s++) { offset[s] = o; o += size[s]; }
+    }
+    const dts = new Float64Array(n);
+    let i = 0, d = 0;
+    for (const [count, delta] of t.stts || []) for (let k = 0; k < count && i < n; k++) { dts[i++] = d; d += delta; }
+    for (; i < n; i++) dts[i] = d;
+    const cts = Float64Array.from(dts);
+    if (t.ctts) {
+      i = 0;
+      for (const [count, off] of t.ctts) for (let k = 0; k < count && i < n; k++, i++) cts[i] = dts[i] + off;
+    }
+    for (let s = 0; s < n; s++) pts[s] = cts[s] / tk.timescale + tk.offset;
+    if (t.sync) { for (const s of t.sync) if (s >= 1 && s <= n) sync[s - 1] = 1; } else sync.fill(1);
+    return { n, offset, size, pts, sync };
+  }
+
+  const hex2 = (b) => b.toString(16).padStart(2, '0');
+
+  /** WebCodecs に渡す形式名（avc1.64002a / hvc1.1.6.L120.90 など）。分からなければ null */
+  function codecString(tk) {
+    const d = tk.description;
+    if (!d) return null;
+    if (tk.codec === 'avc1' || tk.codec === 'avc3') return tk.codec + '.' + hex2(d[1]) + hex2(d[2]) + hex2(d[3]);
+    if (tk.codec === 'hvc1' || tk.codec === 'hev1') {
+      const space = d[1] >> 6, tier = (d[1] >> 5) & 1, profile = d[1] & 31;
+      const flags = ((d[2] << 24) | (d[3] << 16) | (d[4] << 8) | d[5]) >>> 0;
+      let rev = 0;
+      for (let i = 0; i < 32; i++) rev = ((rev << 1) | ((flags >>> i) & 1)) >>> 0;
+      const cons = Array.from(d.subarray(6, 12));
+      while (cons.length && cons[cons.length - 1] === 0) cons.pop();
+      const parts = [tk.codec, (space ? 'ABC'[space - 1] : '') + profile, rev.toString(16), (tier ? 'H' : 'L') + d[12]];
+      return parts.concat(cons.map((b) => b.toString(16))).join('.');
+    }
+    return null;
+  }
+
+  return { parse, decodeAudio, chunkList, topBoxes, sampleTable, codecString };
 })();
 
 if (typeof module !== 'undefined') module.exports = Mp4;

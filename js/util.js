@@ -2,7 +2,7 @@
    映工房 Web — 共通の小物
    ファイルを直したら、APP_VERSION と sw.js の VERSION を必ず両方上げること。
    ------------------------------------------------------------ */
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.2.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -118,11 +118,12 @@ function askText(title, value = '', okLabel = 'OK') {
   });
 }
 
-/** 時間のかかる処理の表示。返り値の set(文字, 割合 0〜1) と close() */
-function progressBox(title) {
+/** 時間のかかる処理の表示。返り値の set(文字, 割合 0〜1) と close()。onCancel を渡すと「やめる」ボタン */
+function progressBox(title, onCancel, note) {
   const bar = h('div', { class: 'progress-bar' }, h('div'));
   const label = h('div', { class: 'progress-label' }, '');
-  const back = h('div', { class: 'modal-back busy' }, h('div', { class: 'modal' }, h('h3', null, title), label, bar));
+  const cancel = onCancel ? h('div', { class: 'modal-buttons' }, h('button', { onclick: (e) => { e.currentTarget.disabled = true; e.currentTarget.textContent = 'やめています…'; onCancel(); } }, 'やめる')) : null;
+  const back = h('div', { class: 'modal-back busy' }, h('div', { class: 'modal' }, h('h3', null, title), label, bar, note ? h('p', { class: 'hint progress-note' }, note) : null, cancel));
   document.body.append(back);
   return {
     set(text, ratio) {

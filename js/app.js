@@ -716,7 +716,7 @@ const App = (() => {
     on('#btnZoomIn', () => Timeline.zoom(1.5));
     on('#btnZoomOut', () => Timeline.zoom(1 / 1.5));
     on('#btnZoomFit', () => Timeline.fitAll());
-    on('#btnExport', () => showDialog({ title: '書き出し', body: '動画の書き出し（MP4）は次のフェーズで入ります。' }));
+    on('#btnExport', () => { if (P) Exporter.open(P, Timeline.selected()); });
     on('#btnBin', () => { $('#inspector').classList.remove('open'); $('#bin').classList.toggle('open'); });
     on('#btnInspector', () => { $('#bin').classList.remove('open'); $('#inspector').classList.toggle('open'); });
     document.addEventListener('keydown', onKey);
