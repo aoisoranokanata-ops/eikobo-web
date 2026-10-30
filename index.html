@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="映工房">
+<meta name="theme-color" content="#1b1d22">
+<title>映工房 Web</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div id="home" class="screen">
+  <header class="bar">
+    <h1>映工房 <small>Web</small></h1>
+    <span id="homeVer" class="ver"></span>
+    <div class="spacer"></div>
+    <button id="btnNew" class="primary">＋ 新しい作品</button>
+  </header>
+  <main id="projectGrid" class="grid"></main>
+  <footer id="storageInfo" class="storage"></footer>
+</div>
+
+<div id="editor" class="screen" hidden>
+  <header class="bar">
+    <button id="btnHome">‹ 作品</button>
+    <button id="btnName" class="title" title="作品の設定"></button>
+    <span id="saveBadge" class="badge"></span>
+    <div class="spacer"></div>
+    <button id="btnUndo" class="icon" title="取り消し（⌘Z）" aria-label="取り消し"><svg viewBox="0 0 24 24"><path d="M9 7H4V2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.5 7.5A8 8 0 1 1 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <button id="btnRedo" class="icon" title="やり直し（⇧⌘Z）" aria-label="やり直し"><svg viewBox="0 0 24 24"><path d="M15 7h5V2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M19.5 7.5A8 8 0 1 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <button id="btnSettings">作品の設定</button>
+    <button id="btnExport" class="primary">書き出し</button>
+  </header>
+
+  <div class="workspace">
+    <aside id="bin" class="panel drawer-left">
+      <div class="panel-head"><span>素材</span><button id="btnImport" class="primary small">＋ 読み込む</button></div>
+      <div id="binList"></div>
+    </aside>
+    <section id="viewer">
+      <div id="previewBox"><canvas id="preview"></canvas></div>
+    </section>
+    <aside id="inspector" class="panel drawer-right"></aside>
+  </div>
+
+  <div class="transport">
+    <button id="btnBin" class="only-narrow">素材</button>
+    <span class="tc"><span id="tc">00:00:00:00</span><span id="durTc" class="dur"></span></span>
+    <div class="spacer"></div>
+    <button id="btnStart" class="icon" aria-label="先頭へ"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="2.5" height="14" rx="1"/><path d="M19 5v14L9 12z"/></svg></button>
+    <button id="btnPrevF" class="icon" aria-label="1 コマ戻る"><svg viewBox="0 0 24 24"><path d="M15 6l-7 6 7 6z"/></svg></button>
+    <button id="btnPlay" class="icon play" aria-label="再生・停止"></button>
+    <button id="btnNextF" class="icon" aria-label="1 コマ進む"><svg viewBox="0 0 24 24"><path d="M9 6l7 6-7 6z"/></svg></button>
+    <button id="btnEnd" class="icon" aria-label="末尾へ"><svg viewBox="0 0 24 24"><path d="M5 5v14l10-7z"/><rect x="16.5" y="5" width="2.5" height="14" rx="1"/></svg></button>
+    <div class="spacer"></div>
+    <button id="btnInspector" class="only-narrow">調整</button>
+  </div>
+
+  <div id="divider" title="ドラッグでタイムラインの高さを変える"><span></span></div>
+
+  <div class="tools">
+    <button id="btnSplit">分割</button>
+    <button id="btnDelete">削除</button>
+    <button id="btnRipple">詰めて削除</button>
+    <button id="btnUnlink">リンク解除</button>
+    <button id="btnMarker">マーカー</button>
+    <button id="btnMulti" class="toggle">複数選択</button>
+    <button id="btnSnap" class="toggle on">スナップ</button>
+    <div class="spacer"></div>
+    <button id="btnAddTrack">＋ トラック</button>
+    <button id="btnZoomOut" class="icon" aria-label="縮小">－</button>
+    <button id="btnZoomFit">全体</button>
+    <button id="btnZoomIn" class="icon" aria-label="拡大">＋</button>
+  </div>
+
+  <div id="timelineBox"><canvas id="timeline"></canvas></div>
+</div>
+
+<input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*,.mov,.mp4,.m4a,.mp3,.wav,.aac,.caf,.heic" hidden>
+
+<script src="js/util.js"></script>
+<script src="js/store.js"></script>
+<script src="js/mp4.js"></script>
+<script src="js/media.js"></script>
+<script src="js/project.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/timeline.js"></script>
+<script src="js/inspector.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
