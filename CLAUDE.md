@@ -4,7 +4,7 @@
 利用端末: iPad Air 13 インチ（M4）Wi-Fi 256GB、Safari / ホーム画面に追加。公開は GitHub Pages。
 
 ## 決まり
-- ビルドなし・外部ライブラリなし。`index.html`＋`css/`＋`js/*.js`（**普通の script。module にしない**。グローバルで共有）。
+- ビルドなし・外部ライブラリなし（例外は AI 高画質化の vendor/ort と models/ だけ。使う時に読み込む。THIRD_PARTY_NOTICES.md）。`index.html`＋`css/`＋`js/*.js`（**普通の script。module にしない**。グローバルで共有）。
 - UI は日本語。ユーザー向けの文（途中経過・報告）も日本語。
 - **ファイルを直したら `sw.js` の VERSION と `js/util.js` の APP_VERSION を両方上げる**。
 - github.io は他の PWA とオリジンを共有する: キャッシュ名は `eikobo-web-` 始まり・自分の古い版だけ消す、
@@ -24,6 +24,8 @@
 | js/project.js | 作品のデータと編集の操作（exe の edit.py の移植）・履歴 |
 | js/engine.js | 再生と合成（時計は AudioContext、動画は消音の video を時計に合わせ、canvas に重ねる）。drawFrame は書き出しと共通 |
 | js/decode.js | 書き出し用に「時刻 t のコマ」を取り出す（VideoDecoder＋標本表、読めない時は video を 1 コマずつ） |
+| js/stabilize.js | 手ぶれ補正（Lucas-Kanade で点を追う → RANSAC で相似変換 → 道筋をガウスでなめらかに）。解析は IndexedDB の stab |
+| js/aienhance.js | AI 高画質化（Real-ESRGAN の小さい版を onnxruntime-web の WebGPU で、4 倍） |
 | js/mux.js | MP4 / MOV を組み立てる（moov を前に。H.264＋AAC、AAC が無ければ MOV＋16bit PCM） |
 | js/exporter.js | 書き出しの画面と本体（音声は OfflineAudioContext → AudioEncoder、映像は 1 コマずつ → VideoEncoder） |
 | js/stream-worker.js | 書き出しの中身を OPFS（eikobo-web/export/）へ流す Worker |
@@ -132,6 +134,31 @@
 - exe の古い書き方の字幕（outline 指定）は行の高さに縁 × 2 を足し、文字を行の上端から描く（TextRender.richen の _legacy）。
 - 切り抜きは見えている向きの割合。素材の回転（スマホの縦動画）がある時は回転前の割合に直して drawImage の範囲に。
 
+### AI 高画質化・手ぶれ補正（v1.1.0）の要点
+- **AI 高画質化**は書き出しの画面だけ（プレビューでは掛けない。1 コマ 0.5 秒かかるため）。「今のコマで試す」で等倍の比較。
+  モデルは Real-ESRGAN の SRVGGNetCompact（BSD-3）。公式の .pth（GitHub の Release）を `tools/esrgan_to_onnx.py` で
+  torch なしで ONNX に（pickle を自前で読む。--blend で 2 つを混ぜる、--fp16 で半精度）。`tools/esrgan_check.py` で numpy の手計算と一致を確認。
+  実行は onnxruntime-web 1.30.0 の WebGPU（numThreads=1。GitHub Pages は SharedArrayBuffer が無い）。shader-f16 があれば *_fp16.onnx。
+- 対象は 1280×720 以下の動画クリップ（iPad の canvas は約 1600 万画素まで、4 倍で 5120×2880）。既定は「出力で元より大きく映る」ものだけ、
+  「拡大しない動画にも」でノイズ除去として全部。4 倍の絵は getSource の `iw・ih`（絵そのものの画素）で渡し、置き方は元の w・h で決める
+  （Engine.drawClip）。同じ素材のコマ（スロー）は描き直さない。書き出しの描き手は `Exporter.framePainter`（「今のコマで試す」と共通）。
+- 書き出しの大きさは短い辺で選ぶ（2160 / 1080 / 720、作品より大きいと「拡大」）。
+- 速さ（GTX 1660S の Chrome、fp16）: 640×480 の 1 コマ 約 0.55 秒（general）・0.32 秒（anime）、うち推論 0.44 秒。1280×720 は約 1.3 秒。
+  640 画素の区切り（1 回で回す）は 512 画素で 2 回より少し速い。iPad は未確認。
+- 効果（tools/make_ai_fixtures.py の blur480_nat。写真を 640×480 に縮め、ぼかし σ1.3・ノイズ・700kbps）: 劣化前の 1440×1080 と比べて
+  ふつうの拡大 PSNR 27.05 / SSIM 0.837 → general 28.26 / 0.895、anime 28.16 / 0.898、light 27.66 / 0.880。ノイズがほぼ消え、縁が締まる。
+  失われた細部は戻らない（それらしく描くだけ）ことはユーザーに伝えてある。
+- sw.js: vendor/ と models/ は版をまたぐ別のキャッシュ（`eikobo-web-ai-1`）にキャッシュ優先で。大きいので普段の 6 秒の待ちでは落ちる。
+  中身を変える時はファイル名かキャッシュ名を変える。
+- **手ぶれ補正**は AI のモデルではない（ワープスタビライザーと同じ考え方）。320 画素幅の白黒・見えている向きで解析（プレビューの video と
+  書き出しの読み手で回転の扱いが違うため）。区画ごとの Shi-Tomasi の角 → ピラミッド式 Lucas-Kanade → RANSAC の相似変換。
+  道筋（積み上げ）をガウス（σ = なめらかさ秒 × fps / 2）でなめらかにし、差だけ動かす。drawClip でクリップの回転の後・素材の回転の前に掛ける。
+  自動の拡大 = 全コマで「回転した四角が画面を覆う大きさ＋ずれ」の最大（上限 1.5）。98 パーセンタイルにしたら端が 2 コマ見えた。
+- 手ぶれの確かめ（shaky.mp4 = 写真をパン＋揺れ・回転、本当の動きは shaky_truth.json）: 推定の誤差 0.06 画素・0.01°、180 コマの解析 1.2 秒。
+  補正後の揺れ 6.5 → 0.08 画素/コマ。書き出した動画をもう一度解析して 0.23 画素/コマ・回転 0.18 → 0.02°/コマ、端の黒は出ない。
+- クリップの `stab = {on, strength, zoom}` は .ekp にも書く（exe は知らない項目を読み飛ばす）。解析の結果は IndexedDB の stab（素材 ID ごと。
+  素材を消すと一緒に消す）。クリップの範囲を超えたら「解析し直す」（前の範囲も含めて解析）。
+
 ## 確かめ方
 - 開発サーバー: `.claude/launch.json` の `eikobo-web`（`python eikobo-web/tools/devserver.py 8678`）。no-store、`PUT /tools/fixtures/<名前>` で
   ブラウザから PNG などを書き出せる（画面が撮れない時はこれで canvas を見る）。
@@ -159,6 +186,8 @@
 6. **exe との往復（v1.0.0、2026-11-02）= 全フェーズ完了**: .ekp ＋素材＋ LUT の ZIP を書き出す（Windows 版へ・バックアップ）、
    .ekp / ZIP を読み込む（素材は相対パス → 名前で結ぶ、まとめて差し替え）。以降は使いながら改修。
    プロキシ（重い素材の軽い代わり）は入れていない（iPad の動画の再生は OS のハードウェアに任せている）。
+7. **AI 高画質化・手ぶれ補正（v1.1.0、2026-11-03）**: 書き出しで AI 高画質化（Real-ESRGAN、4 倍、480p → 1080p など）、
+   書き出しの大きさに拡大を追加、クリップの手ぶれ補正（動きの解析）。iPad 実機の WebGPU・速さは未確認。
 
 ## 既知の割り切り（フェーズ1）
 - 音声は作品を開いている間メモリに置く（10 分のステレオで約 230MB）。とても長い素材は重い。エフェクトを掛けたクリップは

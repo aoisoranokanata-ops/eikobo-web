@@ -230,3 +230,13 @@ button.accent { background: #5a3a22; border-color: #bf6a37; }
   transition: opacity 0.2s, transform 0.2s; max-width: 90vw; text-align: center;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* AI 高画質化（書き出しの画面） */
+.ai-box { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; display: grid; gap: 8px; }
+.ai-compare { position: relative; max-width: 100%; line-height: 0; background: #000; border-radius: 6px; overflow: hidden; }
+.ai-compare canvas { display: block; width: 100%; height: auto; }
+.ai-compare canvas.ai-after { position: absolute; left: 0; top: 0; }
+.ai-tag { position: absolute; top: 6px; line-height: 1.4; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: rgba(0, 0, 0, 0.65); color: #fff; }
+.ai-tag.left { left: 6px; }
+.ai-tag.right { right: 6px; }
+.ai-slider { width: 100%; margin: 8px 0 0; }

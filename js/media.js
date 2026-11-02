@@ -299,6 +299,7 @@ const Media = (() => {
     imageCache.delete(id);
     records.delete(id);
     await Store.del('media', id);
+    try { await Store.del('stab', id); } catch { /* 無い */ }
     await Store.removeFile(id);
   }
 

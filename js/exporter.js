@@ -5,6 +5,7 @@
       AAC が使えない端末では MOV ＋ 16bit PCM にする（写真アプリでも開ける形）。
    2. 映像: 1 コマずつ、素材のコマ（decode.js）を Engine.drawFrame で重ね → VideoEncoder（H.264）。
    3. 中身は OPFS に流し、最後に moov を前に付けて 1 つのファイルにする（mux.js）。
+   AI 高画質化（aienhance.js）を選ぶと、対象の動画のコマを AI で 4 倍にしてから重ねる（ぼけ・ノイズも取れる）。
    出来たら「共有（写真に保存）」か「ダウンロード」。共有は押した操作の中でしか呼べないので、ボタンを出す。
    ------------------------------------------------------------ */
 const Exporter = (() => {
@@ -15,11 +16,37 @@ const Exporter = (() => {
 
   const even = (x) => Math.max(2, Math.round(x / 2) * 2);
 
+  /** size = 'full' か短い辺の画素（'1080' など。作品より大きいと拡大） */
   function outSize(P, size) {
-    const long = Math.max(P.width, P.height);
-    const lim = size === 'full' ? long : Number(size);
-    const k = Math.min(1, lim / long);
+    if (size === 'full') return [even(P.width), even(P.height)];
+    const k = Number(size) / Math.min(P.width, P.height);
     return [even(P.width * k), even(P.height * k)];
+  }
+
+  // ---- AI 高画質化の対象 ---------------------------------------------------------------
+  /** 範囲 [a, b) で AI を掛ける動画クリップ → {ids: Set, frames, pixels（コマ × 画素）} */
+  function aiTargets(P, a, b, outW, all) {
+    const k = outW / P.width;
+    const ids = new Set();
+    let frames = 0, pixels = 0;
+    for (const c of Object.values(P.clips)) {
+      const m = c.media && P.media[c.media];
+      if (!m || m.kind !== 'video' || !c.enabled) continue;
+      const tr = Proj.track(P, c.track);
+      if (!tr || tr.kind !== 'video' || tr.muted) continue;
+      const n = Math.min(b, Proj.end(c)) - Math.max(a, c.start);
+      if (n <= 0 || !m.width || !AiEnhance.fits(m.width, m.height)) continue;
+      if (!all) {
+        // 出力で元より大きく映るものだけ（拡大されるもの）
+        const side = m.rotation === 90 || m.rotation === 270;
+        const pl = Engine.placement(c, side ? m.height : m.width, side ? m.width : m.height);
+        if (pl.w * k <= (side ? m.height : m.width) * 1.05) continue;
+      }
+      ids.add(c.id);
+      frames += n;
+      pixels += n * m.width * m.height;
+    }
+    return { ids, frames, pixels };
   }
 
   function bitrateFor(q, w, h, fps) {
@@ -67,10 +94,25 @@ const Exporter = (() => {
     const range = h('select', null,
       h('option', { value: 'all' }, `全体（${fmtTC(total, fps)}）`),
       selRange ? h('option', { value: 'sel' }, `選んだクリップの範囲（${fmtTC(selRange[1] - selRange[0], fps)}）`) : null);
-    const long = Math.max(P.width, P.height);
+    const short = Math.min(P.width, P.height);
     const sizes = [['full', `作品の大きさ（${P.width} × ${P.height}）`]];
-    for (const l of [3840, 1920, 1280]) if (l < long) { const [w, hh] = outSize(P, l); sizes.push([String(l), `${w} × ${hh}`]); }
+    for (const l of [2160, 1080, 720]) {
+      if (l === short) continue;
+      const [w, hh] = outSize(P, l);
+      sizes.push([String(l), `${w} × ${hh}（${l}p${l > short ? '・拡大' : ''}）`]);
+    }
     const size = h('select', null, ...sizes.map(([v, t]) => h('option', { value: v }, t)));
+    // AI 高画質化
+    const aiKind = h('select', null, h('option', { value: '' }, 'しない'), ...Object.entries(AiEnhance.MODELS).map(([k2, [, t]]) => h('option', { value: k2 }, t)));
+    const aiAll = h('input', { type: 'checkbox' });
+    const aiNote = h('p', { class: 'hint' });
+    const aiTry = h('button', { type: 'button', class: 'block', disabled: true }, '今のコマで試す（AI あり・なしを比べる）');
+    const aiBox = h('div', { class: 'ai-box' },
+      h('label', null, 'AI 高画質化', aiKind),
+      h('label', { class: 'inline' }, aiAll, '拡大しない動画にも掛ける（ノイズ除去として）'),
+      aiTry, aiNote);
+    let gpu = null;
+    AiEnhance.support().then((g) => { gpu = g; update(); });
     const quality = h('select', null, ...Object.entries(QUALITY).map(([k, [t]]) => h('option', { value: k, selected: k === 'std' }, t)));
     const hasSubs = Proj.subtitleClips(P).length > 0;
     const subs = h('input', { type: 'checkbox', checked: true });
@@ -81,8 +123,31 @@ const Exporter = (() => {
       const sec = (r[1] - r[0]) / fps;
       const bytes = (bitrateFor(quality.value, w, hh, fps) + 192000) / 8 * sec;
       est.textContent = `${w} × ${hh}・${Math.round(fps * 1000) / 1000} fps・H.264　だいたい ${fmtBytes(bytes)}`;
+      // AI の説明
+      if (gpu && !gpu.webgpu) {
+        aiKind.disabled = true; aiAll.disabled = true; aiTry.disabled = true;
+        aiNote.textContent = 'このブラウザは WebGPU に対応していないので使えません（iPadOS 26 以降の Safari、PC の Chrome で使えます）。';
+        return;
+      }
+      const t = aiTargets(P, r[0], r[1], w, aiAll.checked);
+      aiTry.disabled = !aiKind.value || !gpu;
+      if (!aiKind.value) {
+        aiNote.textContent = '1280×720 以下の動画（アナログ・DVD・古いスマホの映像など）を AI で 4 倍に描き直し、ぼけとノイズを取ってから書き出します。';
+      } else if (!t.frames) {
+        aiNote.textContent = aiAll.checked ? 'この範囲に 1280×720 以下の動画がありません（それより大きい動画には掛けられません）。'
+          : 'この範囲に、この大きさで拡大される動画がありません。大きさを上げるか「拡大しない動画にも掛ける」を選んでください。';
+      } else {
+        const aiSec = AiEnhance.estimate(t.pixels / t.frames, aiKind.value) * t.frames;
+        aiNote.textContent = `動画 ${t.ids.size} 本・${fmtTC(t.frames, fps)} に掛けます。AI の分だけで およそ ${fmtDur(aiSec)}（端末で大きく変わります。「今のコマで試す」で測ると正確になります）。`;
+      }
     };
-    [range, size, quality].forEach((s) => s.addEventListener('change', update));
+    [range, size, quality, aiKind, aiAll].forEach((s) => s.addEventListener('change', update));
+    aiTry.addEventListener('click', async () => {
+      const r = range.value === 'sel' ? selRange : [0, total];
+      const [w, hh] = outSize(P, size.value);
+      await tryAi(P, clamp(Math.round(Engine.position()), r[0], r[1] - 1), w, hh, aiKind.value, aiAll.checked, hasSubs ? subs.checked : true);
+      update();
+    });
     update();
     const body = h('div', { class: 'form' },
       h('label', null, '範囲', range),
@@ -90,12 +155,123 @@ const Exporter = (() => {
       h('label', null, '画質', quality),
       hasSubs ? h('label', { class: 'inline' }, subs, '字幕を動画に入れる（焼き込み）') : null,
       est,
+      aiBox,
       h('p', { class: 'hint' }, '書き出し中は画面を開いたままにしてください（他のアプリに切り替えると止まります）。'));
     const ok = await showDialog({ title: '書き出し（MP4）', body, buttons: [{ label: 'やめる', value: false }, { label: '書き出す', value: true, primary: true }] });
     if (!ok) return;
     const r = range.value === 'sel' ? selRange : [0, total];
     const [w, hh] = outSize(P, size.value);
-    await run(P, { a: r[0], b: r[1], width: w, height: hh, bitrate: bitrateFor(quality.value, w, hh, fps), subtitles: !hasSubs || subs.checked });
+    const ai = aiKind.value && !aiKind.disabled ? { kind: aiKind.value, all: aiAll.checked } : null;
+    await run(P, { a: r[0], b: r[1], width: w, height: hh, bitrate: bitrateFor(quality.value, w, hh, fps), subtitles: !hasSubs || subs.checked, ai });
+  }
+
+  // ---- 1 コマの描画（書き出しと「今のコマで試す」で共通） ---------------------------------------
+  /**
+   * 書き出し用の描き手。frame(fr, g) で fr の絵を g に描く。ai = {kind, all} か null
+   */
+  function framePainter(P, o) {
+    const readers = new Map();
+    const images = new Map();
+    const aiCanvas = new Map();      // クリップ ID → {key, canvas}（同じ素材のコマは描き直さない）
+    const aiIds = o.ai ? aiTargets(P, o.a, o.b, o.width, o.ai.all).ids : new Set();
+    const k = o.width / P.width;
+    return {
+      aiIds,
+      async prepare() {
+        for (const c of Object.values(P.clips)) {
+          const m = c.media && P.media[c.media];
+          if (m && m.kind === 'image' && !images.has(c.media)) images.set(c.media, await Media.image(c.media));
+        }
+        await Stabilize.prepare(P);
+      },
+      async frame(fr, g, useAi = true) {
+        const vis = Engine.visibleClips(fr);
+        const frames = new Map();
+        const visIds = new Set();
+        for (const c of vis) {
+          const m = c.media && P.media[c.media];
+          if (!m || m.kind !== 'video') continue;
+          visIds.add(c.id);
+          let r = readers.get(c.id);
+          if (r === undefined) {
+            r = await Decode.reader(c.media, Media.rec(c.media) || m);
+            readers.set(c.id, r);
+          }
+          if (!r) continue;
+          const t = Proj.srcAt(P, c, fr);
+          let f = await r.frameAt(t);
+          if (f && useAi && aiIds.has(c.id)) {
+            // 同じ素材のコマ（スロー・静止）は前の結果を使う
+            const key = Math.round(t * (m.fps || 30));
+            let e = aiCanvas.get(c.id);
+            if (!e) { e = { key: null, canvas: document.createElement('canvas') }; aiCanvas.set(c.id, e); }
+            if (e.key !== key) { await AiEnhance.enhance(f.img, f.w, f.h, o.ai.kind, e.canvas); e.key = key; }
+            f = { img: e.canvas, w: f.w, h: f.h, rot: f.rot, iw: e.canvas.width, ih: e.canvas.height };
+          }
+          frames.set(c.id, f);
+        }
+        for (const [id, r] of readers) if (!visIds.has(id)) { if (r) r.close(); readers.delete(id); aiCanvas.delete(id); }
+        g.imageSmoothingEnabled = true;
+        g.imageSmoothingQuality = 'high';
+        Engine.drawFrame(g, k, fr, (c) => {
+          const m = P.media[c.media];
+          if (!m) return null;
+          if (m.kind === 'image') { const b = images.get(c.media); return b ? { img: b, w: b.width, h: b.height, rot: 0 } : null; }
+          return frames.get(c.id) || null;
+        }, { subtitles: o.subtitles !== false });
+      },
+      close() {
+        for (const r of readers.values()) if (r) r.close();
+        readers.clear();
+        aiCanvas.clear();
+      },
+    };
+  }
+
+  /** 「今のコマで試す」: 出力の大きさで AI あり・なしを描いて、真ん中を等倍で比べる */
+  async function tryAi(P, fr, w, hh, kind, all, subtitles) {
+    const o = { a: fr, b: fr + 1, width: w, height: hh, subtitles, ai: { kind, all } };
+    const painter = framePainter(P, o);
+    if (!painter.aiIds.size) { toast('このコマには AI を掛ける動画がありません'); return; }
+    const pb = progressBox('AI を準備しています', null, '初めての時は AI の部品（約 30MB）を読み込みます。');
+    const mk = () => { const c = document.createElement('canvas'); c.width = w; c.height = hh; return c; };
+    const A = mk(), B = mk();
+    let sec = 0;
+    try {
+      await AiEnhance.session(kind);
+      await painter.prepare();
+      pb.set('AI なしで描いています', 0.2);
+      await painter.frame(fr, A.getContext('2d', { alpha: false }), false);
+      pb.set('AI で描き直しています', 0.4);
+      // 1 回目は GPU の準備が入るので、2 回目を測る
+      await painter.frame(fr, B.getContext('2d', { alpha: false }), true);
+      painter.close();
+      const t0 = performance.now();
+      await painter.frame(fr, B.getContext('2d', { alpha: false }), true);
+      sec = (performance.now() - t0) / 1000;
+    } catch (err) {
+      pb.close();
+      painter.close();
+      console.error(err);
+      showDialog({ title: 'AI を使えませんでした', body: String((err && err.message) || err) });
+      return;
+    }
+    painter.close();
+    pb.close();
+    // 真ん中を等倍で（画面に入る大きさ）
+    const cw = Math.min(w, 960), ch = Math.min(hh, 540);
+    const x = Math.round((w - cw) / 2), y = Math.round((hh - ch) / 2);
+    const crop = (src) => { const c = document.createElement('canvas'); c.width = cw; c.height = ch; c.getContext('2d').drawImage(src, x, y, cw, ch, 0, 0, cw, ch); return c; };
+    const before = crop(A), after = crop(B);
+    after.className = 'ai-after';
+    const slider = h('input', { type: 'range', min: 0, max: 100, value: 50, class: 'ai-slider' });
+    const wrap = h('div', { class: 'ai-compare' }, before, after, h('span', { class: 'ai-tag left' }, 'AI なし'), h('span', { class: 'ai-tag right' }, 'AI あり'));
+    const set = () => { after.style.clipPath = `inset(0 0 0 ${slider.value}%)`; };
+    slider.addEventListener('input', set);
+    set();
+    const body = h('div', null, wrap, slider,
+      h('p', { class: 'hint' }, `出力 ${w} × ${hh} の真ん中を等倍で表示しています。つまみで左右を動かして比べられます。1 コマの AI にかかった時間: ${sec.toFixed(2)} 秒。`));
+    await showDialog({ title: `AI 高画質化（${AiEnhance.MODELS[kind][1]}）`, body, wide: true });
   }
 
   // 音声は Engine.renderMix（再生と同じ混ぜ方: 音量のキー・フェード・クロスフェード）
@@ -198,7 +374,7 @@ const Exporter = (() => {
     let wake = null;
     try { if (navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); } catch { /* 無くてもよい */ }
     Engine.pause();
-    const readers = new Map();
+    const painter = framePainter(P, o);
     let sink = null;
     let encoder = null;
     const t0 = performance.now();
@@ -208,6 +384,10 @@ const Exporter = (() => {
       await Promise.all([Telop.load(), Motion.load()]);
       const vcfg = await videoConfig(o.width, o.height, fps, o.bitrate);
       if (!vcfg) throw new Error(`この端末では ${o.width}×${o.height} の H.264 に書き出せません。大きさを下げてみてください。`);
+      if (o.ai && painter.aiIds.size) {
+        pb.set('AI を準備しています（初めての時は部品を読み込みます）', 0);
+        await AiEnhance.session(o.ai.kind);
+      }
 
       // 音声
       pb.set('音声を混ぜています', 0);
@@ -272,45 +452,19 @@ const Exporter = (() => {
       canvas.width = o.width; canvas.height = o.height;
       const g = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
       const yuv = new Uint8Array(o.width * o.height * 3 / 2);
-      const k = o.width / P.width;
-      const images = new Map();
-      for (const c of Object.values(P.clips)) {
-        const m = c.media && P.media[c.media];
-        if (m && m.kind === 'image' && !images.has(c.media)) images.set(c.media, await Media.image(c.media));
-      }
+      await painter.prepare();
       const keyInt = Math.max(1, Math.round(fps * 2));
       for (let i = 0; i < n; i++) {
         if (cancelled) throw new Error('cancel');
         if (encErr) throw encErr;
-        const fr = o.a + i;
-        const vis = Engine.visibleClips(fr);
-        const frames = new Map();
-        const visIds = new Set();
-        for (const c of vis) {
-          const m = c.media && P.media[c.media];
-          if (!m || m.kind !== 'video') continue;
-          visIds.add(c.id);
-          let r = readers.get(c.id);
-          if (r === undefined) {
-            r = await Decode.reader(c.media, Media.rec(c.media) || m);
-            readers.set(c.id, r);
-          }
-          if (r) frames.set(c.id, await r.frameAt(Proj.srcAt(P, c, fr)));
-        }
-        for (const [id, r] of readers) if (!visIds.has(id)) { if (r) r.close(); readers.delete(id); }
-        Engine.drawFrame(g, k, fr, (c) => {
-          const m = P.media[c.media];
-          if (!m) return null;
-          if (m.kind === 'image') { const b = images.get(c.media); return b ? { img: b, w: b.width, h: b.height, rot: 0 } : null; }
-          return frames.get(c.id) || null;
-        }, { subtitles: o.subtitles !== false });
+        await painter.frame(o.a + i, g);
         toI420(g.getImageData(0, 0, o.width, o.height).data, o.width, o.height, yuv);
         const vf = new VideoFrame(yuv, { format: 'I420', codedWidth: o.width, codedHeight: o.height, timestamp: Math.round(i * frameUs), duration: Math.round(frameUs), colorSpace: BT709 });
         encoder.encode(vf, { keyFrame: i % keyInt === 0 });
         vf.close();
         await drain();
         while (encoder.encodeQueueSize > 3) { await new Promise((r) => setTimeout(r, 4)); await drain(); }
-        if (i % 5 === 0) {
+        if (i % 5 === 0 || painter.aiIds.size) {
           const el = (performance.now() - t0) / 1000;
           const rest = i > 10 ? el / (i + 1) * (n - i - 1) : null;
           pb.set(`映像 ${fmtTC(i, fps)} / ${fmtTC(n, fps)}${rest !== null ? `　残り約 ${fmtDur(rest)}` : ''}`, 0.05 + 0.93 * (i + 1) / n);
@@ -341,7 +495,8 @@ const Exporter = (() => {
       showDialog({ title: '書き出せませんでした', body: String((err && err.message) || err) });
       return null;
     } finally {
-      for (const r of readers.values()) if (r) r.close();
+      painter.close();
+      if (o.ai) AiEnhance.release();
       if (wake) { try { await wake.release(); } catch { /* 済み */ } }
       Engine.refresh();
     }
@@ -377,5 +532,5 @@ const Exporter = (() => {
     loop();
   }
 
-  return { open, run, videoConfig, aacSupported };
+  return { open, run, videoConfig, aacSupported, outSize, aiTargets, framePainter, tryAi };
 })();

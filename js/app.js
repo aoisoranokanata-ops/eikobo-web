@@ -999,8 +999,10 @@ const App = (() => {
     Inspector.init($('#inspector'), {
       begin, live, end, edit, settings: settingsDialog, preview: previewClip, subtitleStyle: subtitleStyleDialog,
       playhead: () => Engine.position(), seek: (f) => { Engine.pause(); seek(f); }, importLut, normalize: normalizeSelected, prepareFx,
+      pause: () => Engine.pause(), changed: () => Engine.refresh(),
     });
     Grade.onLoaded = () => { Engine.refresh(); Inspector.refresh(); };
+    Stabilize.onLoaded = () => { Engine.refresh(); Inspector.refresh(); };
     // カタログは先に読んでおく（テロップの描き方・モーションに要る）
     Promise.all([Telop.load(), Motion.load()]).then(() => { if (P) { Engine.refresh(); Inspector.refresh(); } }).catch((e) => console.warn('カタログを読めません', e));
     Engine.on('tick', (fr) => {

@@ -15,6 +15,7 @@ const Proj = (() => {
     opacity: 1, pos_x: 0, pos_y: 0, scale: 1, rotation: 0, fit: 'fit',
     volume_db: 0, fade_in: 0, fade_out: 0,
     text: null, style: null, keys: null, trans_in: null, grade: null, crop: null, fill: null, afx: null, motion: null,
+    stab: null,                  // 手ぶれ補正 {on, strength（秒）, zoom（null で自動）}。Web だけ（.ekp にも書く。exe は知らない項目を読み飛ばす）
   };
 
   function create(name = '無題の作品') {

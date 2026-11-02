@@ -301,6 +301,51 @@ const Inspector = (() => {
     })));
   }
 
+  /** 手ぶれ補正（動きの解析 → なめらかな道筋に寄せる） */
+  function renderStab(c, m) {
+    const st = c.stab;
+    const res = Stabilize.get(c.media);
+    const ok = Stabilize.covers(res, c, F());
+    const setS = (k, v) => { c.stab = { on: true, strength: 1, zoom: null, ...(c.stab || {}), [k]: v }; };
+    const rows = [];
+    rows.push(h('label', { class: 'insp-row check' },
+      h('input', { type: 'checkbox', checked: !!(st && st.on), onchange: (e) => { const on = e.target.checked; hooks.edit(on ? '手ぶれ補正' : '手ぶれ補正を外す', () => setS('on', on)); if (on && !ok) analyzeStab(c, m); } }),
+      h('span', null, '手ぶれを補正する')));
+    if (st && st.on) {
+      if (!ok) rows.push(h('p', { class: 'insp-hint warn' }, res ? 'クリップの範囲が解析した範囲を超えています。解析し直してください。' : 'まだ解析していません。'));
+      rows.push(slider('なめらかさ', { min: 0.2, max: 5, step: 0.1, get: () => Number(st.strength || 1), set: (v) => setS('strength', v), unit: '秒' }));
+      const auto = ok ? Stabilize.at(c, c.src_in) : null;
+      rows.push(slider('拡大', { min: 100, max: 150, step: 1, get: () => Math.round((st.zoom || (auto ? auto.auto : 1)) * 100), set: (v) => setS('zoom', v / 100), unit: '%' }));
+      rows.push(h('button', { class: 'block', disabled: !st.zoom, onclick: () => hooks.edit('拡大を自動に', () => setS('zoom', null)) }, st.zoom ? '拡大を自動に戻す' : `拡大は自動（${auto ? Math.round(auto.auto * 100) + '%' : '解析の後'}）`));
+    }
+    rows.push(h('button', { class: 'block', onclick: () => analyzeStab(c, m) }, res ? '動きを解析し直す' : '動きを解析する'));
+    rows.push(h('p', { class: 'insp-hint' }, '映像の動きを解析して、カメラの揺れだけをなめらかにします（AI のモデルではなく、手ぶれ補正の定番の方法）。なめらかさを大きくするほど、ゆっくりしたパンも止まって見えます。'));
+    return section('手ぶれ補正', ...rows);
+  }
+
+  async function analyzeStab(c, m) {
+    hooks.pause && hooks.pause();
+    const fps = F();
+    const old = Stabilize.get(c.media);
+    // クリップの範囲（前後に 1 秒の余裕）。前の解析の範囲も含める（同じ素材の別のクリップのため）
+    let a = Math.max(0, c.src_in - 1), b = Math.min(m.duration || 1e9, c.src_in + c.duration / fps * c.speed + 1);
+    if (old) { a = Math.min(a, old.start / old.fps); b = Math.max(b, (old.start + old.n) / old.fps); }
+    let cancelled = false;
+    const pb = progressBox('手ぶれを解析しています', () => { cancelled = true; });
+    try {
+      await Stabilize.analyze(c.media, Media.rec(c.media) || m, a, b, (r) => pb.set(`${Math.round(r * 100)}%`, r), () => cancelled);
+      pb.close();
+      if (!c.stab || !c.stab.on) hooks.edit('手ぶれ補正', () => { c.stab = { on: true, strength: 1, zoom: null, ...(c.stab || {}), on: true }; });
+      else { render(); hooks.changed && hooks.changed(); }
+      toast('手ぶれを解析しました');
+    } catch (err) {
+      pb.close();
+      if (err && err.message === 'cancel') { toast('解析をやめました'); return; }
+      console.error(err);
+      showDialog({ title: '解析できませんでした', body: String((err && err.message) || err) });
+    }
+  }
+
   const TRANSITIONS = [['dissolve', 'クロスディゾルブ'], ['dip_black', '黒を挟む'], ['dip_white', '白を挟む'], ['wipe_left', 'ワイプ（左へ）'], ['wipe_right', 'ワイプ（右へ）'], ['wipe_up', 'ワイプ（上へ）'], ['wipe_down', 'ワイプ（下へ）'], ['slide_left', 'スライド（左へ）'], ['zoom', 'ズーム']];
 
   function renderTransition(c) {
@@ -361,6 +406,7 @@ const Inspector = (() => {
       root.append(renderKeys(c));
       root.append(renderGrade(c));
       root.append(renderCrop(c));
+      if (m && m.kind === 'video') root.append(renderStab(c, m));
     } else {
       root.append(section('音',
         slider('音量', { min: -40, max: 12, step: 0.5, get: () => c.volume_db, set: (v) => { c.volume_db = v; }, unit: 'dB', kf: { c, prop: 'volume_db', fromV: (v) => Math.round(v * 2) / 2 } }),

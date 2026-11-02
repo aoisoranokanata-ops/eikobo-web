@@ -650,14 +650,23 @@ const Engine = (() => {
       const side = s.rot === 90 || s.rot === 270;
       const pl = placement(c, side ? s.h : s.w, side ? s.w : s.h, tr);
       const dw = side ? pl.h : pl.w, dh = side ? pl.w : pl.h;      // 回転前の向きの大きさ
-      let img = s.img, iw = s.w, ih = s.h;
+      // s.iw・s.ih = 絵そのものの画素（AI で 4 倍にした絵など。置き方は元の w・h で決める）
+      let img = s.img, iw = s.iw || s.w, ih = s.ih || s.h;
       if (c.grade && !Grade.isIdentity(c.grade)) {
-        const graded = Grade.apply(s.img, s.w, s.h, c.grade, dw * k, dh * k);
+        const graded = Grade.apply(s.img, iw, ih, c.grade, dw * k, dh * k);
         if (graded) { img = graded; iw = graded.width; ih = graded.height; }
       }
       target.setTransform(k, 0, 0, k, 0, 0);
       target.translate(pl.cx, pl.cy);
       if (pl.rot) target.rotate(pl.rot * Math.PI / 180);
+      const st = c.stab && c.stab.on ? Stabilize.at(c, Proj.srcAt(p, c, fr)) : null;
+      if (st) {
+        // 手ぶれ補正（見えている向きの素材の画素 → 作品の画素）。端が見えないよう拡大
+        target.scale(st.zoom, st.zoom);
+        target.translate(st.x * pl.w / st.w, st.y * pl.h / st.h);
+        if (st.a) target.rotate(st.a);
+        if (st.s !== 1) target.scale(st.s, st.s);
+      }
       if (s.rot) target.rotate(s.rot * Math.PI / 180);
       target.globalAlpha = alpha;
       if (c.crop && c.crop.some((v) => v > 0)) {

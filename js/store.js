@@ -1,12 +1,12 @@
 /* ------------------------------------------------------------
    保存
-   - IndexedDB "eikobo-web": projects（作品の JSON）・media（素材の情報・縮小画像・波形）
+   - IndexedDB "eikobo-web": projects（作品の JSON）・media（素材の情報・縮小画像・波形）・luts・stab（手ぶれ補正の解析）
    - OPFS の eikobo-web/media/<素材 ID>: 素材のファイルそのもの
      （github.io の他のアプリとオリジンを共有するので、必ず eikobo-web の下に置く）
    ------------------------------------------------------------ */
 const Store = (() => {
   const DB_NAME = 'eikobo-web';
-  const DB_VER = 2;                    // 2: luts（読み込んだ .cube）を足した
+  const DB_VER = 3;                    // 2: luts（読み込んだ .cube）を足した、3: stab（手ぶれ補正の解析）
   const DIR = ['eikobo-web', 'media'];
   let dbp = null;
   const memFiles = new Map();          // OPFS が使えない時だけ（再読み込みで消える）
@@ -20,6 +20,7 @@ const Store = (() => {
         if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('media')) db.createObjectStore('media', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('luts')) db.createObjectStore('luts', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('stab')) db.createObjectStore('stab', { keyPath: 'id' });
       };
       req.onsuccess = () => {
         const db = req.result;
