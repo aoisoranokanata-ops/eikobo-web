@@ -156,10 +156,11 @@ const Media = (() => {
    * ファイルを読み込んで素材にする。返り値は保存した情報。
    * step(文字, 割合) で進み具合を知らせる。
    */
-  async function importFile(file, step = () => {}) {
+  async function importFile(file, step = () => {}, opts = {}) {
     const kind = kindOf(file);
     if (!kind) throw new Error('読み込めない種類のファイルです');
-    const id = uid('m');
+    const id = opts.id || uid('m');        // 差し替え・Windows 版の作品の読み込みでは決まった ID で
+    if (opts.id) { audioCache.delete(id); imageCache.delete(id); if (urls.has(id)) { URL.revokeObjectURL(urls.get(id)); urls.delete(id); } }
     const rec = {
       id, name: file.name, kind, size: file.size, mime: file.type, created: Date.now(),
       duration: 0, fps: 0, width: 0, height: 0, has_video: kind === 'video', has_audio: false, rotation: 0,

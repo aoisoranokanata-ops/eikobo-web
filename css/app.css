@@ -101,6 +101,7 @@ button.toggle.on { background: #29456f; border-color: var(--accent); }
 .bin-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bin-meta { font-size: 11px; color: var(--muted); }
 .bin-item.missing .bin-meta { color: var(--danger); }
+.bin-missing { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin: 8px; border: 1px solid var(--warn); border-radius: 8px; font-size: 13px; color: var(--warn); }
 .bin-empty { color: var(--muted); padding: 18px 14px; font-size: 13px; }
 
 .transport { display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--panel); border-top: 1px solid var(--line); }

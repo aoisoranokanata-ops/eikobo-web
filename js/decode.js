@@ -44,6 +44,7 @@ const Decode = (() => {
         error: (e) => { this.error = e; this.poke(); },
       });
       this.decoder.configure(this.config);
+      this.flushing = null;
       this.flushed = false;
     }
 
@@ -98,7 +99,12 @@ const Decode = (() => {
         if (this.queue.length && !this.cur) this.cur = this.queue.shift();   // t が最初のコマより前 → 最初のコマ
         if (this.queue.length && this.cur) return this.result();
         if (this.next >= this.st.n) {
-          if (!this.flushed) { this.flushed = true; await this.decoder.flush(); continue; }
+          // 残りを出してもらう。flush の終わりは待たずに、出てきたコマを受け取り続ける
+          // （手元に返さないコマが溜まるとデコーダは次を出せず、flush が終わらないまま止まる）
+          if (!this.flushing) {
+            this.flushing = this.decoder.flush().then(() => { this.flushed = true; this.poke(); }, (e) => { this.error = e; this.poke(); });
+          }
+          if (!this.flushed) { await this.waitOutput(); continue; }
           return this.result();                   // 素材の最後のコマのまま
         }
         if (this.decoder.decodeQueueSize < 6 && this.queue.length < 4) await this.feed(3);

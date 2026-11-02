@@ -170,8 +170,9 @@ const App = (() => {
   async function projectMenu(pr) {
     const v = await showDialog({
       title: pr.name,
-      buttons: [{ label: '名前を変える', value: 'rename' }, { label: '複製', value: 'dup' }, { label: '削除', value: 'del', danger: true }, { label: '閉じる', value: null }],
+      buttons: [{ label: '名前を変える', value: 'rename' }, { label: '複製', value: 'dup' }, { label: 'Windows 版へ・バックアップ（.zip）', value: 'zip' }, { label: '削除', value: 'del', danger: true }, { label: '閉じる', value: null }],
     });
+    if (v === 'zip') { await exportBundle(pr); return; }
     if (v === 'rename') {
       const name = await askText('作品の名前', pr.name);
       if (name) { pr.name = name; await Store.put('projects', pr); renderHome(); }
@@ -199,6 +200,52 @@ const App = (() => {
       for (const pr of projects) for (const id of Object.keys(pr.media || {})) used.add(id);
       for (const r of await Store.all('media')) if (!used.has(r.id)) await Media.remove(r.id);
     } catch (err) { console.warn('素材の片付けに失敗', err); }
+  }
+
+  /** 作品を ZIP（.ekp ＋ 素材）にして渡す */
+  async function exportBundle(pr) {
+    const withMedia = h('input', { type: 'checkbox', checked: true });
+    const size = Object.keys(pr.media || {}).length;
+    const ok = await showDialog({
+      title: 'Windows 版へ・バックアップ',
+      body: h('div', { class: 'form' },
+        h('p', { class: 'modal-text' }, `「${pr.name}」を .zip にします。Windows で展開して、中の .ekp を映工房（Windows 版）で開いてください。この Web 版の「読み込む」でも戻せます。`),
+        h('label', { class: 'inline' }, withMedia, `素材のファイルも入れる（${size} 個。大きくなります）`),
+        h('p', { class: 'hint' }, '外すと作品のデータ（.ekp）だけになります。素材がもう Windows にある時に。')),
+      buttons: [{ label: 'やめる', value: false }, { label: '書き出す', value: true, primary: true }],
+    });
+    if (!ok) return;
+    const p = Proj.normalize(JSON.parse(JSON.stringify(pr)));
+    const pb = progressBox('まとめています');
+    let res;
+    try { res = await Ekp.exportZip(p, withMedia.checked, (tx, r) => pb.set(tx, r)); } catch (err) { pb.close(); showDialog({ title: '書き出せませんでした', body: String(err.message || err) }); return; }
+    pb.close();
+    const { file, missing } = res;
+    const url = URL.createObjectURL(file);
+    const buttons = [];
+    if (navigator.canShare && navigator.canShare({ files: [file] })) buttons.push({ label: '共有・保存', primary: true, value: () => { navigator.share({ files: [file] }).catch(() => {}); return 'keep'; } });
+    buttons.push({ label: 'ダウンロード', value: () => { const a = h('a', { href: url, download: file.name }); document.body.append(a); a.click(); a.remove(); return 'keep'; } });
+    buttons.push({ label: '閉じる', value: null });
+    const body = h('p', { class: 'modal-text' }, `${file.name}（${fmtBytes(file.size)}）` + (missing.length ? `
+この端末に無い素材は入れられませんでした: ${missing.join('、')}` : ''));
+    for (;;) { const v = await showDialog({ title: '書き出しました', body, buttons }); if (v !== 'keep') break; }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  /** .ekp・.zip を読み込んで新しい作品に */
+  async function importProject(file) {
+    Store.persist();
+    const pb = progressBox('作品を読み込んでいます');
+    let r;
+    try {
+      await Telop.load();
+      r = await Ekp.importFile(file, (tx, x) => pb.set(tx, x));
+    } catch (err) { pb.close(); showDialog({ title: '読み込めませんでした', body: String(err.message || err) }); return; }
+    pb.close();
+    await Store.put('projects', JSON.parse(JSON.stringify(r.project)));
+    await openProject(r.project.id);
+    if (r.missing.length) toast(`素材 ${r.found.length} 個を読み込みました。見つからない素材 ${r.missing.length} 個は「素材」から選べます`, 6000);
+    else toast(`作品と素材 ${r.found.length} 個を読み込みました`);
   }
 
   async function newProject() {
@@ -252,6 +299,11 @@ const App = (() => {
     list.textContent = '';
     if (!P) return;
     const items = Object.values(P.media);
+    if (mediaMissing.size) {
+      list.append(h('div', { class: 'bin-missing' },
+        h('span', null, `見つからない素材が ${mediaMissing.size} 個あります。`),
+        h('button', { class: 'small primary', onclick: () => { relinkId = '*'; $('#fileInput').click(); } }, 'まとめて選ぶ（名前で結びます）')));
+    }
     if (!items.length) {
       list.append(h('div', { class: 'bin-empty' }, '「＋ 読み込む」から動画・音声・画像を追加します。', h('br'), '写真アプリ・ファイル・iCloud Drive から選べます。'));
       return;
@@ -312,19 +364,40 @@ const App = (() => {
     $('#fileInput').click();
   }
 
+  /** 素材を差し替える [[素材 ID, File]]。同じ ID のまま取り込み直す（縮小画像・波形も作り直す） */
+  async function relinkFiles(pairs) {
+    const pb = progressBox('素材を差し替えています');
+    let ok = 0;
+    const errors = [];
+    for (let i = 0; i < pairs.length; i++) {
+      const [mid, f] = pairs[i];
+      try {
+        const rec = await Media.importFile(f, (tx, r) => pb.set(`${i + 1} / ${pairs.length}　${f.name}${tx ? '：' + tx : ''}`, r !== null && r !== undefined ? (i + r) / pairs.length : null), { id: mid });
+        P.media[mid] = { ...P.media[mid], ...Media.projectInfo(rec), name: P.media[mid].name || rec.name };
+        mediaMissing.delete(mid);
+        ok++;
+      } catch (err) { errors.push(`${f.name}: ${err.message}`); }
+    }
+    pb.close();
+    markDirty();
+    Engine.setProject(P);
+    Engine.preloadAudio();
+    Timeline.draw();
+    renderBin();
+    toast(`${ok} 個を差し替えました` + (mediaMissing.size ? `（まだ見つからない素材 ${mediaMissing.size} 個）` : ''), 4000);
+    if (errors.length) showDialog({ title: '差し替えられなかったファイル', body: h('ul', { class: 'err-list' }, ...errors.map((e) => h('li', null, e))) });
+  }
+
   async function onFiles(files) {
     if (!files.length || !P) return;
     if (relinkId) {
       const mid = relinkId;
       relinkId = null;
-      const pb = progressBox('素材を差し替えています');
-      try {
-        await Store.writeFile(mid, files[0], (r) => pb.set(files[0].name, r));
-        mediaMissing.delete(mid);
-        toast('差し替えました');
-      } catch (err) { toast('差し替えできませんでした: ' + err.message); } finally { pb.close(); }
-      Engine.setProject(P);
-      renderBin();
+      const pairs = mid === '*'
+        ? [...mediaMissing].map((id) => [id, files.find((f) => f.name.toLowerCase() === (P.media[id].name || '').toLowerCase() || f.name.toLowerCase() === Ekp.baseName(P.media[id].path).toLowerCase())]).filter(([, f]) => f)
+        : [[mid, files[0]]];
+      if (!pairs.length) { toast('名前の合うファイルがありませんでした'); return; }
+      await relinkFiles(pairs);
       return;
     }
     await importFiles(Array.from(files));
@@ -947,6 +1020,8 @@ const App = (() => {
 
     const on = (id, fn) => $(id).addEventListener('click', fn);
     on('#btnNew', newProject);
+    on('#btnOpenFile', () => $('#projectInput').click());
+    $('#projectInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) importProject(f); });
     on('#btnHome', showHome);
     on('#btnName', settingsDialog);
     on('#btnSettings', settingsDialog);

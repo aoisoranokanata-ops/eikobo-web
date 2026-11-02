@@ -21,6 +21,7 @@
     <h1>映工房 <small>Web</small></h1>
     <span id="homeVer" class="ver"></span>
     <div class="spacer"></div>
+    <button id="btnOpenFile">読み込む（.ekp / .zip）</button>
     <button id="btnNew" class="primary">＋ 新しい作品</button>
   </header>
   <main id="projectGrid" class="grid"></main>
@@ -92,6 +93,7 @@
 <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*,.mov,.mp4,.m4a,.mp3,.wav,.aac,.caf,.heic" hidden>
 <input type="file" id="srtInput" accept=".srt,.txt,text/plain,application/x-subrip" hidden>
 <input type="file" id="lutInput" accept=".cube,text/plain" hidden>
+<input type="file" id="projectInput" accept=".ekp,.zip,.json,application/zip,application/json" hidden>
 
 <script src="js/util.js"></script>
 <script src="js/keyframes.js"></script>
@@ -110,6 +112,8 @@
 <script src="js/decode.js"></script>
 <script src="js/mux.js"></script>
 <script src="js/exporter.js"></script>
+<script src="js/zip.js"></script>
+<script src="js/ekp.js"></script>
 <script src="js/timeline.js"></script>
 <script src="js/stylepicker.js"></script>
 <script src="js/inspector.js"></script>

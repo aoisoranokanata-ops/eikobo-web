@@ -38,6 +38,8 @@ const TextRender = (() => {
     else out.shadow = false;
     out.line_spacing = 0.25;
     if (st.box) { out.box_pad_x = 0.35; out.box_pad_y = 0.35; out.box_radius = 0.2; }
+    // exe の古い描き方（render_text）: 行の高さに縁の 2 倍を足し、文字は行の上端から（縦に真ん中へ寄せない）
+    out._legacy = w;
     return out;
   }
 
@@ -84,7 +86,8 @@ const TextRender = (() => {
     const m = meas.measureText('あ');
     const asc = Math.round(m.fontBoundingBoxAscent || size * 0.88);
     const desc = Math.round(m.fontBoundingBoxDescent || size * 0.12);
-    const lineH = Math.round(size * 1.25);
+    const legacy = st._legacy !== undefined;
+    const lineH = Math.round(size * 1.25) + (legacy ? 2 * Math.max(0, Math.round(st._legacy * scale)) : 0);
     const gap = Math.round(size * (st.line_spacing ?? 0.2));
     const chars = [], advs = [], widths = [], glyphs = [];
     for (const ln of lines) {
@@ -105,7 +108,7 @@ const TextRender = (() => {
     const W = tw + 2 * (pad + bx), H = th + 2 * (pad + by);
     const ox = pad + bx, oy = pad + by;
     const talign = st.text_align || 'center';
-    const yTop = oy + Math.floor((lineH - (asc + desc)) / 2);
+    const yTop = legacy ? oy : oy + Math.floor((lineH - (asc + desc)) / 2);
     const starts = [], tops = [], base = [], grad = [];
     widths.forEach((w, i) => {
       const x = ox + (talign === 'left' ? 0 : talign === 'right' ? tw - w : (tw - w) / 2);

@@ -38,6 +38,8 @@
 | js/audiofx.js | 音声処理（exe の audiofx.py と同じ式）: ラウドネス・EQ・コンプ・ノイズ除去・リミッター・ダッキング |
 | js/mixer.js | ミキサーの板（トラックの音量・パン・M/S・メーター、マスター・リミッター、ダッキング、全体のラウドネス） |
 | js/recorder.js | ナレーション録音（getUserMedia → MediaRecorder → 素材にして置く） |
+| js/zip.js | ZIP の読み書き（書くのは無圧縮・ZIP64、読むのは Deflate も・Shift_JIS の名前も） |
+| js/ekp.js | 映工房（exe）の .ekp との変換と、ZIP（.ekp ＋ media/ ＋ luts/）の書き出し・読み込み |
 | js/timeline.js | タイムライン（canvas、指・Pencil・マウス） |
 | js/inspector.js | 調整パネル |
 | js/app.js | 作品一覧・編集画面のつなぎ・素材の一覧・キーボード・自動保存 |
@@ -111,6 +113,23 @@
 - モノラルの素材は左右に同じ音として測る・鳴らす（Web Audio の up-mix と同じ）。
 - 録音は再生と同時に始めるので、再生の始まりまでの差（約 0.1 秒＋出力の遅れ）だけ頭を削って置く。マイクの入力の遅れは見ていない。
   確かめる時は getUserMedia を OscillatorNode の MediaStreamDestination に差し替えると、録音 → 読み込み → 配置まで通せる。
+### exe との往復（フェーズ6）の要点
+- .ekp は exe の to_json / from_json と同じ形（format 3）。項目名は最初から同じにしてあるので、ekp.js は形を整えるだけ
+  （exe の dataclass に無い項目は書かない）。Web だけの項目（作品の id・名前・cover など）は .ekp に入らない。
+- 書き出し（作品一覧の ⋯ →「Windows 版へ・バックアップ」）: ZIP に `<名前>.ekp`・`media/<素材>`・`luts/<LUT>.cube`。
+  素材の path / rel_path も LUT も .ekp からの相対パス。**exe は v1.3.1 で LUT も相対パスで探すようにした**
+  （eikobo/tests/test_ekp_relative_lut.py）。ZIP は OPFS（eikobo-web/export/bundle.zip）へ流して作る。
+- 読み込み（作品一覧の「読み込む」）: .ekp だけ・ZIP（Windows の「送る→圧縮」= Deflate、古い Windows の Shift_JIS 名も）。
+  素材は rel_path（.ekp の場所から）→ ファイル名の順で ZIP の中を探し、**exe と同じ素材 ID のまま**取り込む
+  （Media.importFile の opts.id）。見つからない素材は「素材」の「まとめて選ぶ」（名前で結ぶ）か 1 つずつ「差し替え」。
+  同じ exe の作品を 2 回読み込むと素材は同じ ID なので使い回される。LUT は ZIP の中の .cube を取り込むか、同じ名前の読み込み済み LUT。
+- 確かめ方: `python tools/roundtrip_exe.py [zip] [フレーム…]`（Web の ZIP を exe のコードで開いて、素材・LUT が見つかるか、
+  exe の合成器で描いた絵と Web の絵 rt_web_<f>.png を比べる）。exe → Web は `python tools/make_sjis_zip.py` で
+  Shift_JIS の ZIP も作れる。結果: Web → exe は平均差 2.6〜3.6（試験動画の BT.601/709 の解釈の違いが大半）、
+  exe → Web（掛け合いサンプルの吹き出し字幕）は 1.5〜1.9。
+- 往復の確認中に見つけた不具合: **VideoDecoder の flush を待つ間に出てきたコマを手元に溜めると、デコーダが次を出せずに
+  止まる**（素材の終わり近くを読むと書き出しも止まりうる）→ flush は待たずに出てきたコマを受け取り続ける（decode.js）。
+- exe の古い書き方の字幕（outline 指定）は行の高さに縁 × 2 を足し、文字を行の上端から描く（TextRender.richen の _legacy）。
 - 切り抜きは見えている向きの割合。素材の回転（スマホの縦動画）がある時は回転前の割合に直して drawImage の範囲に。
 
 ## 確かめ方
@@ -137,7 +156,9 @@
 5. **音声（v0.5.0、2026-11-02）**: ミキサー（音量・パン・M/S・メーター）、マスターの音量とリミッター、クリップの EQ・コンプ・
    ノイズ除去、ラウドネスをそろえる（同じ素材はまとめて）、全体のラウドネス、BGM の自動ダッキング（サイドチェイン）、
    ナレーション録音、タイムラインの音量の線。
-6. exe との往復・仕上げ（v1.0.0）: .ekp の読み書き（素材はファイル名で結び付け）、作品のバックアップ、重い素材の扱い（プロキシ）。
+6. **exe との往復（v1.0.0、2026-11-02）= 全フェーズ完了**: .ekp ＋素材＋ LUT の ZIP を書き出す（Windows 版へ・バックアップ）、
+   .ekp / ZIP を読み込む（素材は相対パス → 名前で結ぶ、まとめて差し替え）。以降は使いながら改修。
+   プロキシ（重い素材の軽い代わり）は入れていない（iPad の動画の再生は OS のハードウェアに任せている）。
 
 ## 既知の割り切り（フェーズ1）
 - 音声は作品を開いている間メモリに置く（10 分のステレオで約 230MB）。とても長い素材は重い。エフェクトを掛けたクリップは
