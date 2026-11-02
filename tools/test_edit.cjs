@@ -2,6 +2,7 @@
 let n = 0;
 global.uid = (p = '') => p + (++n).toString(36);
 global.clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+global.Keys = require('../js/keyframes.js');
 const Proj = require('../js/project.js');
 const assert = require('assert');
 
@@ -104,6 +105,34 @@ t('履歴の写しと戻し', () => {
   assert.notStrictEqual(Proj.snapshot(p), before);
   Proj.restore(p, before);
   assert.strictEqual(Object.keys(p.clips).length, 0);
+});
+
+t('分割するとキーは右側へずれ、切れ目の側のモーションは外れる', () => {
+  const p = fresh();
+  const [v] = Proj.insertMedia(p, p.media.mv, 0, { vtrack: 'v1' });
+  v.keys = { opacity: [[0, 0, 'linear'], [100, 1, 'linear'], [200, 0.5, 'linear']] };
+  v.motion = { in: { id: 'in.fade' }, out: { id: 'out.fade' } };
+  const [r] = Proj.splitAt(p, 150, [v.id]);
+  assert.deepStrictEqual(r.keys.opacity.map((k) => k[0]), [-50, 50]);
+  assert.deepStrictEqual(Object.keys(v.motion), ['in']);
+  assert.deepStrictEqual(Object.keys(r.motion), ['out']);
+  // 頭のトリムでもずれる
+  Proj.trim(p, r, 'start', 160);
+  assert.deepStrictEqual(r.keys.opacity.map((k) => k[0]), [-60, 40]);
+});
+
+t('トランジション: 前に接したクリップがあれば付き、リンクした音声はクロスフェード', () => {
+  const p = fresh();
+  Proj.insertMedia(p, p.media.mv, 0, { vtrack: 'v1', atrack: 'a1' });
+  const [v2, a2] = Proj.insertMedia(p, p.media.mv, 300, { vtrack: 'v1', atrack: 'a1' });
+  Proj.setTransition(p, v2, 'wipe_left', 20);
+  assert.deepStrictEqual(v2.trans_in, { type: 'wipe_left', frames: 20 });
+  assert.deepStrictEqual(a2.trans_in, { type: 'dissolve', frames: 20 });
+  assert.deepStrictEqual(Proj.transitionZone(v2), [290, 310]);
+  const [img] = Proj.insertMedia(p, p.media.im, 900, { vtrack: 'v1' });
+  Proj.setTransition(p, img, 'dissolve', 20);          // 前に接していない → フェードイン
+  assert.strictEqual(img.trans_in, null);
+  assert.strictEqual(img.fade_in, 20);
 });
 
 console.log(tests, 'tests passed');

@@ -132,6 +132,15 @@ input[type=text], input[type=number], select {
 input[type=range] { width: 100%; accent-color: var(--accent); }
 input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 
+/* キーフレーム・色 */
+button.kf { min-height: 22px; width: 22px; padding: 0; margin-right: 4px; font-size: 11px; line-height: 1; background: #2a2e36; color: #666; border-color: #444; vertical-align: middle; }
+button.kf.has { color: #b59a3a; }
+button.kf.on { color: #1d1d1f; background: var(--sel); border-color: var(--sel); }
+.insp-label { display: flex; align-items: center; }
+.insp-buttons { display: flex; gap: 6px; margin: 4px 0; }
+.insp-buttons button { flex: 1; }
+.insp-hint.warn { color: var(--warn); }
+
 /* テロップ・字幕 */
 button.accent { background: #5a3a22; border-color: #bf6a37; }
 .insp-textarea { width: 100%; min-height: 64px; resize: vertical; background: #14161a; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 15px; -webkit-user-select: text; user-select: text; }

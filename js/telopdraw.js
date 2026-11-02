@@ -34,8 +34,9 @@ const TelopDraw = (() => {
   const textScale = (p, c, kOut) => p.height / 1080 * kOut * Math.max(0.01, c.scale);
 
   /** テロップを描く（g の変形は何でもよい。中で出力の座標に戻す） */
-  function drawText(g, p, c, fr, kOut, alpha) {
+  function drawText(g, p, c, fr, kOut, alpha, tr) {
     if (!c.text) return;
+    if (tr) c = { ...c, ...tr };          // キーフレームを反映した位置・拡大・回転
     const st = textStyle(c);
     if (c.motion && Motion.catalog && drawMotion(g, p, c, fr, kOut, alpha, st)) return;
     const img = TextRender.render(c.text, st, textScale(p, c, kOut));
@@ -197,7 +198,8 @@ const TelopDraw = (() => {
   }
 
   /** 画面上の枠（作品の画素）: {cx, cy, w, h, rot}。プレビューで掴む・枠を描く用 */
-  function bounds(p, c) {
+  function bounds(p, c, tr) {
+    if (tr) c = { ...c, ...tr };
     const track = Proj.track(p, c.track);
     if (track && track.kind === 'subtitle') {
       const { st, img, k } = subtitleImage(p, c, 1);

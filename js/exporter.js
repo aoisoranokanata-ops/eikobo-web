@@ -98,56 +98,7 @@ const Exporter = (() => {
     await run(P, { a: r[0], b: r[1], width: w, height: hh, bitrate: bitrateFor(quality.value, w, hh, fps), subtitles: !hasSubs || subs.checked });
   }
 
-  // ---- 音声を混ぜる ---------------------------------------------------------------
-  async function renderAudio(P, a, b) {
-    const fps = Proj.fps(P);
-    const solo = P.tracks.some((t) => t.kind === 'audio' && t.solo);
-    const tracks = P.tracks.filter((t) => t.kind === 'audio' && !t.muted && (!solo || t.solo));
-    const items = [];
-    for (const t of tracks) {
-      for (const c of Object.values(P.clips)) {
-        if (c.track !== t.id || !c.enabled || !c.media || Proj.end(c) <= a || c.start >= b) continue;
-        const au = await Media.audio(c.media);
-        if (au) items.push({ c, t, au });
-      }
-    }
-    if (!items.length) return null;
-    const len = Math.max(1, Math.round((b - a) / fps * SR));
-    const oc = new OfflineAudioContext(2, len, SR);
-    const master = oc.createGain();
-    master.gain.value = dbToGain(P.master_db || 0);
-    master.connect(oc.destination);
-    const T = (fr) => (fr - a) / fps;
-    for (const { c, t, au } of items) {
-      const from = Math.max(c.start, a);
-      const e = Math.min(Proj.end(c), b);
-      let when = T(from);
-      let off = Proj.srcAt(P, c, from) - au.offset;
-      let dur = (e - from) / fps * c.speed;
-      if (off < 0) { when += -off / c.speed; dur += off; off = 0; }
-      if (dur <= 0 || off >= au.buffer.duration) continue;
-      const src = oc.createBufferSource();
-      src.buffer = au.buffer;
-      src.playbackRate.value = c.speed;
-      const gain = oc.createGain();
-      const base = dbToGain((c.volume_db || 0) + (t.volume_db || 0));
-      const at = (fr) => base * Engine.fadeFactor(c, fr);
-      const gp = gain.gain;
-      gp.setValueAtTime(at(from), when);
-      if (c.fade_in > 0 && from < c.start + c.fade_in) gp.linearRampToValueAtTime(base, T(c.start + c.fade_in));
-      if (c.fade_out > 0) {
-        const fs = Math.max(from, Proj.end(c) - c.fade_out);
-        if (fs > from) gp.setValueAtTime(at(fs), T(fs));
-        gp.linearRampToValueAtTime(0, T(Proj.end(c)));
-      }
-      src.connect(gain);
-      let node = gain;
-      if (t.pan) { const pn = oc.createStereoPanner(); pn.pan.value = clamp(t.pan, -1, 1); gain.connect(pn); node = pn; }
-      node.connect(master);
-      src.start(when, off, dur);
-    }
-    return oc.startRendering();
-  }
+  // 音声は Engine.renderMix（再生と同じ混ぜ方: 音量のキー・フェード・クロスフェード）
 
   /** AAC にする。返り値 {chunks: [{data, frames, t}], asc} */
   async function encodeAac(buf, cancelled) {
@@ -260,7 +211,7 @@ const Exporter = (() => {
 
       // 音声
       pb.set('音声を混ぜています', 0);
-      const mix = await renderAudio(P, o.a, o.b);
+      const mix = await Engine.renderMix(P, o.a, o.b, SR);
       if (cancelled) throw new Error('cancel');
       let audio = null;
       let aChunks = [];
@@ -426,5 +377,5 @@ const Exporter = (() => {
     loop();
   }
 
-  return { open, run, renderAudio, videoConfig, aacSupported };
+  return { open, run, videoConfig, aacSupported };
 })();

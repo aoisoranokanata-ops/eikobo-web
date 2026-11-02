@@ -9,6 +9,7 @@ const App = (() => {
   let liveBefore = null;
   let mediaMissing = new Set();
   let relinkId = null;
+  let seekRefresh = 0;
   const STD_FPS = [[24000, 1001], [24, 1], [25, 1], [30000, 1001], [30, 1], [50, 1], [60000, 1001], [60, 1]];
 
   // ---- 保存 -------------------------------------------------------------------
@@ -542,6 +543,32 @@ const App = (() => {
     });
   }
 
+  function addFill() {
+    let c = null;
+    if (edit('カラーを置く', () => { c = Proj.insertFill(P, Engine.position(), '#1e3a5f'); })) {
+      Timeline.select([c.id], c.id);
+      $('#inspector').classList.add('open');
+    }
+  }
+
+  /** .cube を選んで読み込む。返り値は LUT の参照（やめたら null） */
+  function importLut() {
+    return new Promise((resolve) => {
+      const inp = $('#lutInput');
+      inp.value = '';
+      inp.onchange = async () => {
+        const f = inp.files && inp.files[0];
+        if (!f) { resolve(null); return; }
+        try {
+          const r = await Grade.importCube(f);
+          toast(`LUT「${r.name}」を読み込みました`);
+          resolve(r.ref);
+        } catch (err) { toast('LUT を読めませんでした: ' + err.message, 4000); resolve(null); }
+      };
+      inp.click();
+    });
+  }
+
   function previewClip(c) {
     Engine.pause();
     seek(c.start);
@@ -594,6 +621,14 @@ const App = (() => {
   }
 
   // ---- プレビューの直接操作 -------------------------------------------------------
+  /** 再生位置での値（キーフレームを反映） */
+  const kv = (c, prop) => Keys.valueAt(c, prop, Math.floor(Engine.position()));
+  /** 値を変える。キーのある属性は再生位置のキーを作る・直す */
+  function setKv(c, prop, v) {
+    if (Keys.has(c, prop)) Keys.setKey(c, prop, clamp(Math.round(Engine.position() - c.start), 0, c.duration), v);
+    else c[prop] = v;
+  }
+
   function initPreview() {
     const cv = $('#preview');
     const pts = new Map();
@@ -624,11 +659,11 @@ const App = (() => {
           if (hit) { Timeline.select([hit.id], hit.id); c = hit; } else { drag = null; return; }
         }
         if (c && Proj.track(P, c.track).locked) { drag = null; return; }
-        drag = { id: c.id, mode: corner ? 'scale' : 'move', x0: pt.x, y0: pt.y, px: c.pos_x, py: c.pos_y, s0: c.scale, r0: c.rotation, began: false };
+        drag = { id: c.id, mode: corner ? 'scale' : 'move', x0: pt.x, y0: pt.y, px: kv(c, 'pos_x'), py: kv(c, 'pos_y'), s0: kv(c, 'scale'), r0: kv(c, 'rotation'), began: false };
         if (corner) { const b = Engine.clipBox(c); drag.d0 = Math.hypot(pt.x - b.cx, pt.y - b.cy); }
       } else if (pts.size === 2 && c && visual(c)) {
         const [a, b] = [...pts.values()];
-        drag = { id: c.id, mode: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), a0: Math.atan2(b.y - a.y, b.x - a.x), s0: c.scale, r0: c.rotation, px: c.pos_x, py: c.pos_y, m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, began: drag ? drag.began : false };
+        drag = { id: c.id, mode: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), a0: Math.atan2(b.y - a.y, b.x - a.x), s0: kv(c, 'scale'), r0: kv(c, 'rotation'), px: kv(c, 'pos_x'), py: kv(c, 'pos_y'), m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, began: drag ? drag.began : false };
       }
     });
     cv.addEventListener('pointermove', (e) => {
@@ -644,26 +679,27 @@ const App = (() => {
       }
       live(() => {
         if (drag.mode === 'move') {
-          c.pos_x = Math.round(drag.px + pt.x - drag.x0);
-          c.pos_y = Math.round(drag.py + pt.y - drag.y0);
+          let x = Math.round(drag.px + pt.x - drag.x0), y = Math.round(drag.py + pt.y - drag.y0);
           // 中央に吸い付く
-          if (Math.abs(c.pos_x) < P.width * 0.01) c.pos_x = 0;
-          if (Math.abs(c.pos_y) < P.height * 0.01) c.pos_y = 0;
+          if (Math.abs(x) < P.width * 0.01) x = 0;
+          if (Math.abs(y) < P.height * 0.01) y = 0;
+          setKv(c, 'pos_x', x);
+          setKv(c, 'pos_y', y);
         } else if (drag.mode === 'scale') {
           const b = Engine.clipBox(c);
           const d = Math.hypot(pt.x - b.cx, pt.y - b.cy);
-          c.scale = clamp(drag.s0 * d / Math.max(1, drag.d0), 0.05, 8);
+          setKv(c, 'scale', clamp(drag.s0 * d / Math.max(1, drag.d0), 0.05, 8));
         } else if (drag.mode === 'pinch' && pts.size >= 2) {
           const [a, b] = [...pts.values()];
           const d = Math.hypot(a.x - b.x, a.y - b.y);
           const ang = Math.atan2(b.y - a.y, b.x - a.x);
           const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-          c.scale = clamp(drag.s0 * d / Math.max(1, drag.d0), 0.05, 8);
+          setKv(c, 'scale', clamp(drag.s0 * d / Math.max(1, drag.d0), 0.05, 8));
           let rot = drag.r0 + (ang - drag.a0) * 180 / Math.PI;
           if (Math.abs(rot - Math.round(rot / 90) * 90) < 3) rot = Math.round(rot / 90) * 90;   // 90 度ごとに吸い付く
-          c.rotation = Math.round(rot * 10) / 10;
-          c.pos_x = Math.round(drag.px + m.x - drag.m0.x);
-          c.pos_y = Math.round(drag.py + m.y - drag.m0.y);
+          setKv(c, 'rotation', Math.round(rot * 10) / 10);
+          setKv(c, 'pos_x', Math.round(drag.px + m.x - drag.m0.x));
+          setKv(c, 'pos_y', Math.round(drag.py + m.y - drag.m0.y));
         }
       });
       Inspector.refresh();
@@ -677,7 +713,7 @@ const App = (() => {
         // 1 本だけ残ったら移動に戻る
         const [rest] = [...pts.values()];
         const c = P.clips[drag.id];
-        if (c) drag = { id: c.id, mode: 'move', x0: rest.x, y0: rest.y, px: c.pos_x, py: c.pos_y, began: drag.began };
+        if (c) drag = { id: c.id, mode: 'move', x0: rest.x, y0: rest.y, px: kv(c, 'pos_x'), py: kv(c, 'pos_y'), began: drag.began };
       }
     };
     cv.addEventListener('pointerup', up);
@@ -787,12 +823,21 @@ const App = (() => {
       seek: (f) => { Engine.pause(); seek(f); },
       trackMenu,
     });
-    Inspector.init($('#inspector'), { begin, live, end, edit, settings: settingsDialog, preview: previewClip, subtitleStyle: subtitleStyleDialog });
+    Inspector.init($('#inspector'), {
+      begin, live, end, edit, settings: settingsDialog, preview: previewClip, subtitleStyle: subtitleStyleDialog,
+      playhead: () => Engine.position(), seek: (f) => { Engine.pause(); seek(f); }, importLut,
+    });
+    Grade.onLoaded = () => { Engine.refresh(); Inspector.refresh(); };
     // カタログは先に読んでおく（テロップの描き方・モーションに要る）
     Promise.all([Telop.load(), Motion.load()]).then(() => { if (P) { Engine.refresh(); Inspector.refresh(); } }).catch((e) => console.warn('カタログを読めません', e));
     Engine.on('tick', (fr) => {
       updateTc(fr);
-      if (Engine.isPlaying()) Timeline.follow(fr); else Timeline.draw();
+      if (Engine.isPlaying()) Timeline.follow(fr);
+      else {
+        Timeline.draw();
+        // キーフレームのある値は再生位置で変わるので出し直す（動かしている間はまとめて 1 回）
+        if (!seekRefresh) seekRefresh = requestAnimationFrame(() => { seekRefresh = 0; Inspector.onSeek(); });
+      }
     });
     Engine.on('state', (on) => setPlayIcon(on));
     setPlayIcon(false);
@@ -816,6 +861,7 @@ const App = (() => {
     on('#btnNextF', () => step(1));
     on('#btnText', addText);
     on('#btnSubs', subtitleMenu);
+    on('#btnFill', addFill);
     $('#srtInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f && P) importSrt(f); });
     on('#btnSplit', split);
     on('#btnDelete', () => remove(false));

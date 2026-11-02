@@ -6,7 +6,7 @@
    ------------------------------------------------------------ */
 const Store = (() => {
   const DB_NAME = 'eikobo-web';
-  const DB_VER = 1;
+  const DB_VER = 2;                    // 2: luts（読み込んだ .cube）を足した
   const DIR = ['eikobo-web', 'media'];
   let dbp = null;
   const memFiles = new Map();          // OPFS が使えない時だけ（再読み込みで消える）
@@ -19,6 +19,7 @@ const Store = (() => {
         const db = req.result;
         if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('media')) db.createObjectStore('media', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('luts')) db.createObjectStore('luts', { keyPath: 'id' });
       };
       req.onsuccess = () => {
         const db = req.result;

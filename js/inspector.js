@@ -25,10 +25,33 @@ const Inspector = (() => {
     return h('div', { class: 'insp-section' }, h('div', { class: 'insp-title' }, title), ...kids);
   }
 
+  /** 再生位置のクリップ先頭からのフレーム（クリップの中に収める） */
+  const offsetOf = (c) => clamp(Math.round(hooks.playhead() - c.start), 0, c.duration);
+
   /**
    * スライダー＋数字の行。get() → 表示の値、set(v) → クリップへ（表示の単位で受け取る）
+   * kf = {c, prop, toV, fromV} を渡すとキーフレームの ◆ ボタンが付く。キーがある属性は、動かすと再生位置のキーを作る・直す。
    */
-  function slider(label, { min, max, step, get, set, unit = '', fmt = (v) => v, label2 }) {
+  function slider(label, { min, max, step, get, set, unit = '', fmt = (v) => v, label2, kf }) {
+    let diamond = null;
+    if (kf) {
+      const { c, prop, toV = (v) => v, fromV = (v) => v } = kf;
+      const g0 = get, s0 = set;
+      get = () => (Keys.has(c, prop) ? fromV(Keys.valueAt(c, prop, c.start + offsetOf(c))) : g0());
+      set = (v) => { if (Keys.has(c, prop)) Keys.setKey(c, prop, offsetOf(c), toV(v)); else s0(v); };
+      const on = !!Keys.at(c, prop, offsetOf(c));
+      diamond = h('button', {
+        class: 'kf' + (on ? ' on' : Keys.has(c, prop) ? ' has' : ''), title: on ? 'このキーを消す' : 'ここにキーを打つ', 'aria-label': 'キーフレーム',
+        onclick: (e) => {
+          e.preventDefault();
+          const off = offsetOf(c);
+          hooks.edit(on ? 'キーを消す' : 'キーを打つ', () => {
+            if (Keys.at(c, prop, off)) Keys.removeKey(c, prop, off);
+            else Keys.setKey(c, prop, off, toV(get()));
+          });
+        },
+      }, '◆');
+    }
     const range = h('input', { type: 'range', min, max, step, value: get() });
     const num = h('input', { type: 'number', min, max, step, value: fmt(get()), inputmode: 'decimal' });
     let live = false;
@@ -44,7 +67,7 @@ const Inspector = (() => {
       if (!isFinite(v)) { num.value = fmt(get()); return; }
       hooks.edit(label, () => set(clamp(v, Number(min), Number(max))));
     });
-    return h('label', { class: 'insp-row' }, h('span', { class: 'insp-label' }, label2 || label), range, h('span', { class: 'insp-num' }, num, unit ? h('small', null, unit) : null));
+    return h('label', { class: 'insp-row' }, h('span', { class: 'insp-label' }, diamond, label2 || label), range, h('span', { class: 'insp-num' }, num, unit ? h('small', null, unit) : null));
   }
 
   function selectRow(label, options, value, onChange) {
@@ -140,12 +163,9 @@ const Inspector = (() => {
       selectRow('基準', anchors, cur.anchor || 'center', (v) => hooks.edit('置き場所', () => { setSt('anchor', v === 'center' ? undefined : v); c.pos_x = 0; c.pos_y = 0; })),
       cur.anchor && cur.anchor !== 'center' ? slider('端から 横', { min: 0, max: 600, step: 2, get: () => Math.round(st().margin_x ?? 80), set: (v) => setSt('margin_x', v), unit: 'px' }) : null,
       cur.anchor && cur.anchor !== 'center' ? slider('端から 縦', { min: 0, max: 600, step: 2, get: () => Math.round(st().margin_y ?? 60), set: (v) => setSt('margin_y', v), unit: 'px' }) : null,
-      slider('位置 X', { min: -p.width, max: p.width, step: 1, get: () => Math.round(c.pos_x), set: (v) => { c.pos_x = v; }, unit: 'px' }),
-      slider('位置 Y', { min: -p.height, max: p.height, step: 1, get: () => Math.round(c.pos_y), set: (v) => { c.pos_y = v; }, unit: 'px' }),
-      slider('拡大', { min: 10, max: 400, step: 1, get: () => Math.round(c.scale * 100), set: (v) => { c.scale = v / 100; }, unit: '%' }),
-      slider('回転', { min: -180, max: 180, step: 0.5, get: () => c.rotation, set: (v) => { c.rotation = v; }, unit: '°' }),
-      slider('不透明度', { min: 0, max: 100, step: 1, get: () => Math.round(c.opacity * 100), set: (v) => { c.opacity = v / 100; }, unit: '%' }),
+      ...transformSliders(c, 10),
     ));
+    root.append(renderKeys(c));
     root.append(renderMotion(c));
     root.append(renderFades(c));
   }
@@ -212,11 +232,112 @@ const Inspector = (() => {
     root.append(renderFades(c));
   }
 
+  /** 位置・拡大・回転・不透明度（キーフレームの ◆ 付き） */
+  function transformSliders(c, scaleMin = 5) {
+    return [
+      slider('位置 X', { min: -p.width, max: p.width, step: 1, get: () => Math.round(c.pos_x), set: (v) => { c.pos_x = v; }, unit: 'px', kf: { c, prop: 'pos_x', fromV: Math.round } }),
+      slider('位置 Y', { min: -p.height, max: p.height, step: 1, get: () => Math.round(c.pos_y), set: (v) => { c.pos_y = v; }, unit: 'px', kf: { c, prop: 'pos_y', fromV: Math.round } }),
+      slider('拡大', { min: scaleMin, max: 400, step: 1, get: () => Math.round(c.scale * 100), set: (v) => { c.scale = v / 100; }, unit: '%', kf: { c, prop: 'scale', toV: (v) => v / 100, fromV: (v) => Math.round(v * 100) } }),
+      slider('回転', { min: -180, max: 180, step: 0.5, get: () => c.rotation, set: (v) => { c.rotation = v; }, unit: '°', kf: { c, prop: 'rotation', fromV: (v) => Math.round(v * 10) / 10 } }),
+      slider('不透明度', { min: 0, max: 100, step: 1, get: () => Math.round(c.opacity * 100), set: (v) => { c.opacity = v / 100; }, unit: '%', kf: { c, prop: 'opacity', toV: (v) => v / 100, fromV: (v) => Math.round(v * 100) } }),
+    ];
+  }
+
+  /** キーフレームのまとめ（前後のキーへ移動・補間・全部消す） */
+  function renderKeys(c) {
+    const offs = Keys.offsets(c);
+    if (!offs.length) return section('キーフレーム', h('p', { class: 'insp-hint' }, '◆ を押すと、再生位置にキーを打ちます。キーを 2 つ以上打つと、その間で値がなめらかに変わります。'));
+    const off = offsetOf(c);
+    const prev = offs.filter((o) => o < off).pop();
+    const next = offs.find((o) => o > off);
+    const here = Keys.ANIMATABLE.filter((pp) => Keys.at(c, pp, off));
+    const easing = here.length ? Keys.at(c, here[0], off)[2] || 'linear' : null;
+    return section('キーフレーム',
+      info('キー', `${offs.length} か所${here.length ? '（再生位置にあり）' : ''}`),
+      h('div', { class: 'insp-buttons' },
+        h('button', { disabled: prev === undefined, onclick: () => hooks.seek(c.start + prev) }, '◀ 前のキー'),
+        h('button', { disabled: next === undefined, onclick: () => hooks.seek(c.start + next) }, '次のキー ▶')),
+      here.length ? selectRow('次への動き', Keys.EASINGS, easing, (v) => hooks.edit('補間', () => { for (const pp of here) Keys.setKey(c, pp, off, Keys.at(c, pp, off)[1], v); })) : null,
+      h('button', { class: 'block', onclick: () => hooks.edit('キーを全部消す', () => Keys.clearKeys(c, null, c.start + off)) }, 'キーを全部消す（今の値で止める）'));
+  }
+
+  /** 色調補正 */
+  function renderGrade(c) {
+    const g = c.grade || {};
+    const setG = (k, v) => { const n = { ...(c.grade || {}) }; if (v === undefined || v === null) delete n[k]; else n[k] = v; c.grade = Object.keys(n).length ? n : null; };
+    const looks = [['', 'ルックを選ぶ…']].concat(Object.keys(Grade.LOOKS).map((k) => [k, k]));
+    const rows = [selectRow('ルック', looks, '', (v) => { if (v) hooks.edit('ルック', () => { c.grade = { ...Grade.LOOKS[v] }; }); })];
+    for (const [k, [d, lo, hi, label, step]] of Object.entries(Grade.PARAMS)) {
+      if (k === 'lut_mix') continue;
+      rows.push(slider(label.replace(/（.*）/, ''), { min: lo, max: hi, step, get: () => Number(g[k] ?? d), set: (v) => setG(k, Math.abs(v - d) < 1e-9 ? undefined : v), label2: label }));
+    }
+    const lutSel = h('select', null, h('option', { value: '' }, 'なし'));
+    for (const [ref, name] of Object.entries(Grade.BUILTIN)) lutSel.append(h('option', { value: ref, selected: g.lut === ref }, name));
+    lutSel.append(h('option', { value: '+import' }, '＋ .cube を読み込む…'));
+    if (g.lut && !Grade.BUILTIN[g.lut]) lutSel.append(h('option', { value: g.lut, selected: true }, Grade.lutName(g.lut)));
+    Grade.userLuts().then((list) => {
+      for (const u of list) {
+        if (u.ref === g.lut) { const o = lutSel.querySelector(`option[value="${u.ref}"]`); if (o) o.textContent = u.name; continue; }
+        lutSel.insertBefore(h('option', { value: u.ref }, u.name), lutSel.querySelector('option[value="+import"]'));
+      }
+    });
+    lutSel.addEventListener('change', async () => {
+      if (lutSel.value === '+import') { lutSel.value = g.lut || ''; const ref = await hooks.importLut(); if (ref) hooks.edit('LUT', () => setG('lut', ref)); return; }
+      hooks.edit('LUT', () => setG('lut', lutSel.value || undefined));
+    });
+    rows.push(h('label', { class: 'insp-row' }, h('span', { class: 'insp-label' }, 'LUT'), lutSel));
+    const err = g.lut ? Grade.error(g.lut) : '';
+    if (err) rows.push(h('p', { class: 'insp-hint warn' }, err));
+    if (g.lut) rows.push(slider('LUT の強さ', { min: 0, max: 100, step: 1, get: () => Math.round(Number(g.lut_mix ?? 1) * 100), set: (v) => setG('lut_mix', v / 100), unit: '%' }));
+    rows.push(h('button', { class: 'block', disabled: !c.grade, onclick: () => hooks.edit('色を戻す', () => { c.grade = null; }) }, '色を元に戻す'));
+    return section('色', ...rows);
+  }
+
+  function renderCrop(c) {
+    const names = ['左', '上', '右', '下'];
+    return section('切り抜き', ...names.map((n, i) => slider(n, {
+      min: 0, max: 49, step: 0.5, get: () => Math.round(((c.crop || [0, 0, 0, 0])[i] || 0) * 1000) / 10, unit: '%',
+      set: (v) => { const cr = (c.crop || [0, 0, 0, 0]).slice(); cr[i] = v / 100; c.crop = cr.some((x) => x > 0) ? cr : null; },
+    })));
+  }
+
+  const TRANSITIONS = [['dissolve', 'クロスディゾルブ'], ['dip_black', '黒を挟む'], ['dip_white', '白を挟む'], ['wipe_left', 'ワイプ（左へ）'], ['wipe_right', 'ワイプ（右へ）'], ['wipe_up', 'ワイプ（上へ）'], ['wipe_down', 'ワイプ（下へ）'], ['slide_left', 'スライド（左へ）'], ['zoom', 'ズーム']];
+
+  function renderTransition(c) {
+    const isAudio = Proj.track(p, c.track).kind === 'audio';
+    const prev = Object.values(p.clips).find((q) => q.track === c.track && Proj.end(q) === c.start && q.enabled);
+    const cur = c.trans_in;
+    const type = h('select', null, h('option', { value: '' }, 'なし'), ...(isAudio ? [['dissolve', 'クロスフェード']] : TRANSITIONS).map(([v, t]) => h('option', { value: v, selected: cur && cur.type === v }, t)));
+    const secs = h('input', { type: 'number', min: 0.1, max: 5, step: 0.1, value: cur ? Math.round(cur.frames / F() * 100) / 100 : 0.5, inputmode: 'decimal' });
+    const apply = () => hooks.edit(type.value ? 'トランジション' : 'トランジションを外す', () => {
+      const n = Math.max(2, Math.round((parseFloat(secs.value) || 0.5) * F()));
+      Proj.setTransition(p, c, type.value || null, n);
+    });
+    type.addEventListener('change', apply);
+    secs.addEventListener('change', () => { if (type.value) apply(); });
+    return section('前のクリップとのつなぎ',
+      h('label', { class: 'insp-row motion' }, h('span', { class: 'insp-label' }, '種類'), type, h('span', { class: 'insp-num' }, secs, h('small', null, '秒'))),
+      prev ? null : h('p', { class: 'insp-hint' }, 'すぐ前に接しているクリップがありません。選ぶとフェードインになります。'),
+      h('p', { class: 'insp-hint' }, isAudio ? 'リンクした映像にも付きます。' : 'リンクした音声にはクロスフェードが付きます。'));
+  }
+
+  function renderFill(c) {
+    root.append(h('div', { class: 'panel-head' }, h('span', null, 'カラー（単色）')));
+    root.append(section('色',
+      colorRow('色', () => c.fill, (v) => { c.fill = v; }),
+      slider('濃さ', { min: 0, max: 100, step: 1, get: () => Math.round(parseInt((c.fill || '#000000ff').slice(7, 9) || 'ff', 16) / 2.55), unit: '%', set: (v) => { c.fill = (c.fill || '#000000').slice(0, 7) + Math.round(v * 2.55).toString(16).padStart(2, '0'); } })));
+    root.append(section('見た目', ...transformSliders(c)));
+    root.append(renderKeys(c));
+    root.append(renderTransition(c));
+    root.append(renderFades(c));
+  }
+
   function renderClip(c) {
     const m = c.media ? p.media[c.media] : null;
     const tr = Proj.track(p, c.track);
     if (tr.kind === 'subtitle') { renderSubtitle(c); return; }
     if (c.text && !c.media) { renderText(c); return; }
+    if (c.fill && !c.media) { renderFill(c); return; }
     const isAudio = tr.kind === 'audio';
     const nameInput = h('input', { type: 'text', value: c.name || '', class: 'wide-input' });
     nameInput.addEventListener('change', () => hooks.edit('名前', () => { c.name = nameInput.value.trim(); }));
@@ -234,18 +355,19 @@ const Inspector = (() => {
     if (!isAudio) {
       root.append(section('見た目',
         selectRow('はめ方', [['fit', '画面に収める'], ['fill', '画面を埋める'], ['none', '原寸']], c.fit, (v) => hooks.edit('はめ方', () => { c.fit = v; })),
-        slider('位置 X', { min: -p.width, max: p.width, step: 1, get: () => Math.round(c.pos_x), set: (v) => { c.pos_x = v; }, unit: 'px' }),
-        slider('位置 Y', { min: -p.height, max: p.height, step: 1, get: () => Math.round(c.pos_y), set: (v) => { c.pos_y = v; }, unit: 'px' }),
-        slider('拡大', { min: 5, max: 400, step: 1, get: () => Math.round(c.scale * 100), set: (v) => { c.scale = v / 100; }, unit: '%' }),
-        slider('回転', { min: -180, max: 180, step: 0.5, get: () => c.rotation, set: (v) => { c.rotation = v; }, unit: '°' }),
-        slider('不透明度', { min: 0, max: 100, step: 1, get: () => Math.round(c.opacity * 100), set: (v) => { c.opacity = v / 100; }, unit: '%' }),
-        h('button', { class: 'block', onclick: () => hooks.edit('見た目を戻す', () => Object.assign(c, { pos_x: 0, pos_y: 0, scale: 1, rotation: 0, opacity: 1, fit: 'fit' })) }, '見た目を元に戻す'),
+        ...transformSliders(c),
+        h('button', { class: 'block', onclick: () => hooks.edit('見た目を戻す', () => { Object.assign(c, { pos_x: 0, pos_y: 0, scale: 1, rotation: 0, opacity: 1, fit: 'fit' }); for (const pp of ['pos_x', 'pos_y', 'scale', 'rotation', 'opacity']) Keys.clearKeys(c, pp); }) }, '見た目を元に戻す'),
       ));
+      root.append(renderKeys(c));
+      root.append(renderGrade(c));
+      root.append(renderCrop(c));
     } else {
       root.append(section('音',
-        slider('音量', { min: -40, max: 12, step: 0.5, get: () => c.volume_db, set: (v) => { c.volume_db = v; }, unit: 'dB' }),
+        slider('音量', { min: -40, max: 12, step: 0.5, get: () => c.volume_db, set: (v) => { c.volume_db = v; }, unit: 'dB', kf: { c, prop: 'volume_db', fromV: (v) => Math.round(v * 2) / 2 } }),
       ));
+      root.append(renderKeys(c));
     }
+    root.append(renderTransition(c));
     root.append(section('フェード・速さ',
       slider('フェードイン', { min: 0, max: Math.min(10, maxFade).toFixed(2), step: 0.05, get: () => Math.round(c.fade_in / F() * 100) / 100, set: (v) => { c.fade_in = Math.min(c.duration, Math.round(v * F())); }, unit: '秒' }),
       slider('フェードアウト', { min: 0, max: Math.min(10, maxFade).toFixed(2), step: 0.05, get: () => Math.round(c.fade_out / F() * 100) / 100, set: (v) => { c.fade_out = Math.min(c.duration, Math.round(v * F())); }, unit: '秒' }),
@@ -258,5 +380,11 @@ const Inspector = (() => {
     if (c.link) root.append(h('button', { class: 'block', onclick: () => hooks.edit('リンク解除', () => Proj.unlink(p, [c.id])) }, '映像と音声のリンクを外す'));
   }
 
-  return { init, setProject, show, refresh };
+  /** 再生位置が動いた時（キーフレームのある値を出し直す） */
+  function onSeek() {
+    const c = clipId && p ? p.clips[clipId] : null;
+    if (c && c.keys) refresh();
+  }
+
+  return { init, setProject, show, refresh, onSeek };
 })();

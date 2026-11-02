@@ -542,7 +542,10 @@ const Timeline = (() => {
     if (!c.enabled) g.globalAlpha *= 0.4;
     if (kind === 'audio') drawWave(c, x0, x1, y, h, cx0, cx1);
     else if (c.media) drawThumbs(c, x0, x1, y, h, cx0, cx1);
-    else if (c.text && h > 30) {
+    else if (c.fill) {
+      g.fillStyle = c.fill;
+      g.fillRect(x0, y + 16, x1 - x0, h - 18);
+    } else if (c.text && h > 30) {
       // 文字のクリップは中身を大きめに
       g.fillStyle = 'rgba(255,255,255,0.92)';
       g.font = `bold ${kind === 'sub' ? 12 : 15}px -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif`;
@@ -562,7 +565,28 @@ const Timeline = (() => {
     g.lineWidth = 1;
     if (c.fade_in > 0) { g.beginPath(); g.moveTo(x0, y + h); g.lineTo(x0 + c.fade_in * ppf, y + 15); g.stroke(); }
     if (c.fade_out > 0) { g.beginPath(); g.moveTo(x1 - c.fade_out * ppf, y + 15); g.lineTo(x1, y + h); g.stroke(); }
+    // キーフレームの位置
+    if (c.keys && !ghost) {
+      g.fillStyle = '#ffd23f';
+      g.strokeStyle = 'rgba(0,0,0,0.6)';
+      for (const off of Keys.offsets(c)) {
+        const kx = x0 + off * ppf, ky = y + h - 7;
+        if (kx < x0 - 1 || kx > x1 + 1) continue;
+        g.beginPath(); g.moveTo(kx, ky - 5); g.lineTo(kx + 5, ky); g.lineTo(kx, ky + 5); g.lineTo(kx - 5, ky); g.closePath(); g.fill(); g.stroke();
+      }
+    }
     g.restore();
+    // トランジション（切れ目を中心にした範囲）
+    if (c.trans_in && !ghost) {
+      const [za, zb] = Proj.transitionZone(c);
+      const ax = xOf(za), bx = xOf(zb), mx = x0;
+      g.save();
+      g.fillStyle = 'rgba(255,255,255,0.28)';
+      g.strokeStyle = 'rgba(255,255,255,0.85)';
+      g.beginPath(); g.moveTo(ax, y + 16); g.lineTo(bx, y + h - 1); g.lineTo(bx, y + 16); g.lineTo(ax, y + h - 1); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(mx, y + 15); g.lineTo(mx, y + h); g.stroke();
+      g.restore();
+    }
     roundRect(x0 + 0.5, y + 0.5, Math.max(2, x1 - x0 - 1), h - 1, 5);
     g.lineWidth = isSel ? 2 : 1;
     g.strokeStyle = isSel ? '#ffd23f' : 'rgba(255,255,255,0.25)';

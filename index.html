@@ -68,6 +68,7 @@
   <div class="tools">
     <button id="btnText" class="accent">＋ テキスト</button>
     <button id="btnSubs" class="accent">字幕</button>
+    <button id="btnFill">＋ カラー</button>
     <button id="btnSplit">分割</button>
     <button id="btnDelete">削除</button>
     <button id="btnRipple">詰めて削除</button>
@@ -87,8 +88,11 @@
 
 <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*,.mov,.mp4,.m4a,.mp3,.wav,.aac,.caf,.heic" hidden>
 <input type="file" id="srtInput" accept=".srt,.txt,text/plain,application/x-subrip" hidden>
+<input type="file" id="lutInput" accept=".cube,text/plain" hidden>
 
 <script src="js/util.js"></script>
+<script src="js/keyframes.js"></script>
+<script src="js/grade.js"></script>
 <script src="js/telop.js"></script>
 <script src="js/textrender.js"></script>
 <script src="js/motion.js"></script>

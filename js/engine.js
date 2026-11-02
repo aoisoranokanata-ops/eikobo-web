@@ -74,15 +74,38 @@ const Engine = (() => {
     return p.tracks.filter((t) => t.kind === 'video' && !t.muted);
   }
 
-  /** frame で見えるクリップ（下の段から順に） */
-  function visibleClips(fr) {
+  /**
+   * 段ごとの状態（下の段から）: {kind: 'single', c} / {kind: 'trans', a（出る）, b（入る）, t（0〜1）, type}。
+   * exe の Compositor._state と同じ（トランジションは切れ目を中心に、前後のクリップをはみ出させて重ねる）。
+   */
+  function trackStates(fr) {
+    fr = Math.floor(fr);
     const out = [];
     for (const t of visualTracks()) {
-      for (const c of Object.values(p.clips)) {
-        if (c.track === t.id && c.enabled && c.start <= fr && fr < Proj.end(c) && (c.media || c.fill || c.text)) out.push(c);
+      const clips = Proj.clipsOn(p, t.id).filter((c) => c.media || c.fill || c.text);
+      let i = -1;
+      for (let k = 0; k < clips.length; k++) if (clips[k].start <= fr) i = k; else break;
+      const cur = i >= 0 && fr < Proj.end(clips[i]) && clips[i].enabled ? clips[i] : null;
+      const nxt = clips[i + 1];
+      if (cur && nxt && nxt.trans_in && nxt.start === Proj.end(cur) && nxt.enabled) {
+        const [a, b] = Proj.transitionZone(nxt);
+        if (a <= fr && fr < b) { out.push({ kind: 'trans', a: cur, b: nxt, t: (fr - a + 0.5) / (b - a), type: nxt.trans_in.type || 'dissolve' }); continue; }
       }
+      if (cur && cur.trans_in && i > 0) {
+        const prev = clips[i - 1];
+        if (Proj.end(prev) === cur.start && prev.enabled) {
+          const [a, b] = Proj.transitionZone(cur);
+          if (a <= fr && fr < b) { out.push({ kind: 'trans', a: prev, b: cur, t: (fr - a + 0.5) / (b - a), type: cur.trans_in.type || 'dissolve' }); continue; }
+        }
+      }
+      if (cur) out.push({ kind: 'single', c: cur });
     }
     return out;
+  }
+
+  /** frame で見えるクリップ（下の段から順に。トランジション中は両方） */
+  function visibleClips(fr) {
+    return trackStates(fr).flatMap((s) => (s.kind === 'single' ? [s.c] : [s.a, s.b]));
   }
 
   function upcomingClips(fr, sec) {
@@ -148,7 +171,7 @@ const Engine = (() => {
       const e = entry(c);
       const v = e.v;
       if (v.readyState < 1) continue;
-      const target = Proj.srcAt(p, c, fr);
+      const target = Math.max(0, Proj.srcAt(p, c, fr));
       if (v.paused) {
         if (Math.abs(v.currentTime - target) > 0.08) v.currentTime = target;
         v.playbackRate = c.speed;
@@ -193,62 +216,112 @@ const Engine = (() => {
     nodes = [];
   }
 
-  function audioTracks() {
-    const solo = p.tracks.some((t) => t.kind === 'audio' && t.solo);
-    return p.tracks.filter((t) => t.kind === 'audio' && !t.muted && (!solo || t.solo));
+  /**
+   * 鳴らす音声クリップの一覧（exe の audio.py の _entries と同じ）。トランジションのある切れ目は前後をはみ出させて
+   * 等パワーのクロスフェード: xIn = [前へはみ出すフレーム, 全長]、xOut = [後ろへはみ出すフレーム, 全長]。
+   */
+  function audioEntries(pp) {
+    const solo = pp.tracks.some((t) => t.kind === 'audio' && t.solo);
+    const out = [];
+    for (const t of pp.tracks.filter((x) => x.kind === 'audio' && !x.muted && (!solo || x.solo))) {
+      const clips = Proj.clipsOn(pp, t.id).filter((c) => c.enabled && c.media);
+      clips.forEach((c, i) => {
+        const prev = clips[i - 1], nxt = clips[i + 1];
+        let xIn = null, xOut = null;
+        if (c.trans_in && prev && Proj.end(prev) === c.start) { const n = Math.max(2, Math.trunc(c.trans_in.frames || 15)); xIn = [Math.floor(n / 2), n]; }
+        if (nxt && nxt.trans_in && nxt.start === Proj.end(c)) { const n = Math.max(2, Math.trunc(nxt.trans_in.frames || 15)); xOut = [n - Math.floor(n / 2), n]; }
+        out.push({ c, t, xIn, xOut });
+      });
+    }
+    return out;
+  }
+
+  /** クリップ先頭から rel フレームでの音量の倍率（音量のキー・フェード・クロスフェード・トラックの音量） */
+  function audioGain(e, rel) {
+    const c = e.c;
+    let g = dbToGain(Keys.volumeDbAt(c, rel) + (e.t.volume_db || 0));
+    if (c.fade_in > 0 && !e.xIn) g *= clamp(rel / c.fade_in, 0, 1);
+    if (c.fade_out > 0 && !e.xOut) g *= clamp((c.duration - rel) / c.fade_out, 0, 1);
+    if (e.xIn) { const [before, total] = e.xIn; g *= Math.sin(clamp((rel + before) / total, 0, 1) * Math.PI / 2); }
+    if (e.xOut) { const [after, total] = e.xOut; g *= Math.cos(clamp((rel - (c.duration + after - total)) / total, 0, 1) * Math.PI / 2); }
+    return g;
+  }
+
+  /**
+   * 1 つのクリップを鳴らす予約。from〜to はタイムラインのフレーム（はみ出し込みの範囲に収める）、T(フレーム) → 時計の秒。
+   * 音量は 20ms ごとの値のカーブにして setValueCurveAtTime（キー・フェード・クロスフェードを全部まとめて）。
+   */
+  function scheduleEntry(cx, dest, pp, e, au, from, to, T, keep) {
+    const c = e.c, f = Proj.fps(pp);
+    const cs = c.start - (e.xIn ? e.xIn[0] : 0), ce = Proj.end(c) + (e.xOut ? e.xOut[0] : 0);
+    from = Math.max(from, cs);
+    to = Math.min(to, ce);
+    if (from >= to) return;
+    let when = T(from);
+    let off = Proj.srcAt(pp, c, from) - au.offset;
+    let dur = (to - from) / f * c.speed;
+    if (off < 0) { when += -off / c.speed; dur += off; off = 0; }
+    if (dur <= 0 || off >= au.buffer.duration) return;
+    const src = cx.createBufferSource();
+    src.buffer = au.buffer;
+    src.playbackRate.value = c.speed;
+    const gain = cx.createGain();
+    const span = T(to) - T(from);
+    const n = Math.max(2, Math.min(30000, Math.ceil(span * 50) + 1));
+    const curve = new Float32Array(n);
+    let constant = true;
+    for (let i = 0; i < n; i++) {
+      curve[i] = audioGain(e, from + (to - from) * i / (n - 1) - c.start);
+      if (i && Math.abs(curve[i] - curve[0]) > 1e-6) constant = false;
+    }
+    if (constant) gain.gain.value = curve[0];
+    else { gain.gain.value = curve[0]; gain.gain.setValueCurveAtTime(curve, T(from), Math.max(0.001, span)); }
+    let node = gain;
+    if (e.t.pan && cx.createStereoPanner) {
+      const pan = cx.createStereoPanner();
+      pan.pan.value = clamp(e.t.pan, -1, 1);
+      gain.connect(pan);
+      node = pan;
+      if (keep) keep.push(pan);
+    }
+    src.connect(gain);
+    node.connect(dest);
+    src.start(when, off, dur);
+    if (keep) keep.push(src, gain);
   }
 
   function scheduleAudio() {
     const my = token;
     const out = masterNode();
-    for (const t of audioTracks()) {
-      for (const c of Object.values(p.clips)) {
-        if (c.track !== t.id || !c.enabled || !c.media || Proj.end(c) <= startFrame) continue;
-        Media.audio(c.media).then((a) => { if (a && my === token && playing) scheduleClip(c, t, a, out); });
-      }
+    for (const e of audioEntries(p)) {
+      if (Proj.end(e.c) + (e.xOut ? e.xOut[0] : 0) <= startFrame) continue;
+      Media.audio(e.c.media).then((au) => {
+        if (!au || my !== token || !playing) return;
+        const cx = ctx();
+        // 読み込みが遅れて開始時刻を過ぎていたら、今の位置から
+        const nowFrame = startFrame + (cx.currentTime + 0.03 - startCtx) * F();
+        scheduleEntry(cx, out, p, e, au, Math.max(startFrame, nowFrame), Infinity, timeOf, nodes);
+      });
     }
   }
 
-  function scheduleClip(c, t, a, out) {
-    const cx = ctx();
-    const f = F();
-    let from = Math.max(c.start, startFrame);
-    // 読み込みが遅れて開始時刻を過ぎていたら、今の位置から
-    const nowFrame = startFrame + (cx.currentTime + 0.03 - startCtx) * f;
-    if (nowFrame > from) from = nowFrame;
-    const e = Proj.end(c);
-    if (from >= e) return;
-    let when = timeOf(from);
-    let off = Proj.srcAt(p, c, from) - a.offset;
-    let dur = (e - from) / f * c.speed;
-    if (off < 0) { when += -off / c.speed; dur += off; off = 0; }
-    if (dur <= 0 || off >= a.buffer.duration) return;
-    const src = cx.createBufferSource();
-    src.buffer = a.buffer;
-    src.playbackRate.value = c.speed;
-    const gain = cx.createGain();
-    const base = dbToGain((c.volume_db || 0) + (t.volume_db || 0));
-    const fadeAt = (fr) => base * fadeFactor(c, fr);
-    const gp = gain.gain;
-    gp.setValueAtTime(fadeAt(from), when);
-    if (c.fade_in > 0 && from < c.start + c.fade_in) gp.linearRampToValueAtTime(base, timeOf(c.start + c.fade_in));
-    if (c.fade_out > 0) {
-      const fs = Math.max(from, e - c.fade_out);
-      if (fs > from) gp.setValueAtTime(fadeAt(fs), timeOf(fs));
-      gp.linearRampToValueAtTime(0, timeOf(e));
+  /** 書き出し用: a〜b フレームの音声を OfflineAudioContext で混ぜる（無ければ null） */
+  async function renderMix(pp, a, b, sr = 48000) {
+    const entries = [];
+    for (const e of audioEntries(pp)) {
+      const cs = e.c.start - (e.xIn ? e.xIn[0] : 0), ce = Proj.end(e.c) + (e.xOut ? e.xOut[0] : 0);
+      if (ce <= a || cs >= b) continue;
+      const au = await Media.audio(e.c.media);
+      if (au) entries.push([e, au]);
     }
-    let node = gain;
-    if (t.pan && cx.createStereoPanner) {
-      const pan = cx.createStereoPanner();
-      pan.pan.value = clamp(t.pan, -1, 1);
-      gain.connect(pan);
-      node = pan;
-      nodes.push(pan);
-    }
-    src.connect(gain);
-    node.connect(out);
-    src.start(when, off, dur);
-    nodes.push(src, gain);
+    if (!entries.length) return null;
+    const f = Proj.fps(pp);
+    const oc = new OfflineAudioContext(2, Math.max(1, Math.round((b - a) / f * sr)), sr);
+    const m = oc.createGain();
+    m.gain.value = dbToGain(pp.master_db || 0);
+    m.connect(oc.destination);
+    for (const [e, au] of entries) scheduleEntry(oc, m, pp, e, au, a, b, (fr) => (fr - a) / f, null);
+    return oc.startRendering();
   }
 
   function fadeFactor(c, fr) {
@@ -377,15 +450,24 @@ const Engine = (() => {
     requestDraw();
   }
 
-  /** 素材の w×h を置く中心と大きさ（作品の画素） */
-  function placement(c, mw, mh) {
+  /** 素材の w×h を置く中心と大きさ（作品の画素）。tr = キーフレームを反映した値（省略でクリップの値） */
+  function placement(c, mw, mh, tr = c) {
     const cw = p.width, ch = p.height;
     let s;
     if (c.fit === 'fill') s = Math.max(cw / mw, ch / mh);
     else if (c.fit === 'none') s = 1;
     else s = Math.min(cw / mw, ch / mh);
-    s *= c.scale;
-    return { cx: cw / 2 + c.pos_x, cy: ch / 2 + c.pos_y, w: mw * s, h: mh * s, rot: c.rotation || 0 };
+    s *= Math.max(0, tr.scale);
+    return { cx: cw / 2 + tr.pos_x, cy: ch / 2 + tr.pos_y, w: mw * s, h: mh * s, rot: tr.rotation || 0 };
+  }
+
+  /** 切り抜き [左, 上, 右, 下]（見えている向きでの割合）→ 回転前の素材での割合 */
+  function cropFor(crop, rot) {
+    const [l, t, r, b] = crop.map((v) => clamp(Number(v) || 0, 0, 0.49));
+    if (rot === 90) return [t, r, b, l];
+    if (rot === 180) return [r, b, l, t];
+    if (rot === 270) return [b, l, t, r];
+    return [l, t, r, b];
   }
 
   function sourceOf(c) {
@@ -408,37 +490,118 @@ const Engine = (() => {
    */
   function drawFrame(target, k, fr, getSource = sourceOf, opts = {}) {
     target.setTransform(1, 0, 0, 1, 0, 0);
+    target.globalAlpha = 1;
     target.fillStyle = '#000';
     target.fillRect(0, 0, target.canvas.width, target.canvas.height);
-    for (const c of visibleClips(fr)) {
-      const alpha = clamp(c.opacity, 0, 1) * fadeFactor(c, Math.floor(fr));
-      if (alpha <= 0) continue;
-      if (c.text && !c.media) {
-        TelopDraw.drawText(target, p, c, Math.floor(fr), k, alpha);
-        continue;
-      }
+    for (const st of trackStates(fr)) {
+      if (st.kind === 'single') drawClip(target, k, st.c, fr, getSource);
+      else drawTransition(target, k, st, fr, getSource);
+    }
+    target.globalAlpha = 1;
+    target.setTransform(1, 0, 0, 1, 0, 0);
+    if (opts.subtitles !== false) TelopDraw.drawSubtitles(target, p, fr, k, fadeFactor);
+  }
+
+  /** 1 つのクリップを描く（キーフレーム・フェード・切り抜き・色調補正） */
+  function drawClip(target, k, c, fr, getSource) {
+    const tr = Keys.transform(c, fr);
+    const alpha = clamp(tr.opacity, 0, 1) * fadeFactor(c, Math.floor(fr));
+    if (alpha <= 0 || tr.scale <= 0) return;
+    target.save();
+    try {
+      if (c.text && !c.media) { TelopDraw.drawText(target, p, c, Math.floor(fr), k, alpha, tr); return; }
       if (c.fill && !c.media) {
+        // カラーマット: 画面の大きさ × 拡大、位置・回転（exe の _draw_fill）
         target.setTransform(k, 0, 0, k, 0, 0);
+        target.translate(p.width / 2 + tr.pos_x, p.height / 2 + tr.pos_y);
+        if (tr.rotation) target.rotate(tr.rotation * Math.PI / 180);
         target.globalAlpha = alpha;
         target.fillStyle = c.fill;
-        target.fillRect(0, 0, p.width, p.height);
-        continue;
+        const w = p.width * tr.scale, h = p.height * tr.scale;
+        target.fillRect(-w / 2, -h / 2, w, h);
+        return;
       }
       const s = getSource(c);
-      if (!s) continue;
+      if (!s) return;
       const side = s.rot === 90 || s.rot === 270;
-      const pl = placement(c, side ? s.h : s.w, side ? s.w : s.h);
+      const pl = placement(c, side ? s.h : s.w, side ? s.w : s.h, tr);
+      const dw = side ? pl.h : pl.w, dh = side ? pl.w : pl.h;      // 回転前の向きの大きさ
+      let img = s.img, iw = s.w, ih = s.h;
+      if (c.grade && !Grade.isIdentity(c.grade)) {
+        const graded = Grade.apply(s.img, s.w, s.h, c.grade, dw * k, dh * k);
+        if (graded) { img = graded; iw = graded.width; ih = graded.height; }
+      }
       target.setTransform(k, 0, 0, k, 0, 0);
       target.translate(pl.cx, pl.cy);
       if (pl.rot) target.rotate(pl.rot * Math.PI / 180);
       if (s.rot) target.rotate(s.rot * Math.PI / 180);
       target.globalAlpha = alpha;
-      const dw = side ? pl.h : pl.w, dh = side ? pl.w : pl.h;
-      try { target.drawImage(s.img, -dw / 2, -dh / 2, dw, dh); } catch { /* 絵がまだ無い */ }
+      if (c.crop && c.crop.some((v) => v > 0)) {
+        // 切り抜き: 残った所は元の位置のまま
+        const [l, t, r, b] = cropFor(c.crop, s.rot || 0);
+        const sw = iw * (1 - l - r), sh = ih * (1 - t - b);
+        if (sw >= 1 && sh >= 1) target.drawImage(img, iw * l, ih * t, sw, sh, -dw / 2 + dw * l, -dh / 2 + dh * t, dw * (1 - l - r), dh * (1 - t - b));
+      } else {
+        target.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      }
+    } catch { /* 絵がまだ無い */ } finally { target.restore(); }
+  }
+
+  // トランジション用の作業 canvas（出力と同じ大きさ、2 枚）
+  const scratch = [null, null];
+  function scratchFor(i, w, h) {
+    let c = scratch[i];
+    if (!c) { c = scratch[i] = document.createElement('canvas'); }
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    return c.getContext('2d');
+  }
+
+  /** トランジション（exe の blend_transition と同じ: 下の段まで描いた絵に出る側・入る側を描いた 2 枚を混ぜる） */
+  function drawTransition(target, k, st, fr, getSource) {
+    const W = target.canvas.width, H = target.canvas.height;
+    const t = clamp(st.t, 0, 1);
+    const A = scratchFor(0, W, H), B = scratchFor(1, W, H);
+    for (const [g, c] of [[A, st.a], [B, st.b]]) {
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.globalAlpha = 1;
+      g.globalCompositeOperation = 'copy';
+      g.drawImage(target.canvas, 0, 0);
+      g.globalCompositeOperation = 'source-over';
+      drawClip(g, k, c, fr, getSource);
     }
-    target.globalAlpha = 1;
+    const a = A.canvas, b = B.canvas;
+    target.save();
     target.setTransform(1, 0, 0, 1, 0, 0);
-    if (opts.subtitles !== false) TelopDraw.drawSubtitles(target, p, fr, k, fadeFactor);
+    target.globalAlpha = 1;
+    const type = st.type;
+    if (type === 'dip_black' || type === 'dip_white') {
+      const mid = type === 'dip_black' ? '#000' : '#fff';
+      if (t < 0.5) { target.drawImage(a, 0, 0); target.globalAlpha = t * 2; target.fillStyle = mid; target.fillRect(0, 0, W, H); }
+      else { target.fillStyle = mid; target.fillRect(0, 0, W, H); target.globalAlpha = (t - 0.5) * 2; target.drawImage(b, 0, 0); }
+    } else if (type.startsWith('wipe_')) {
+      target.drawImage(a, 0, 0);
+      let x = 0, y = 0, w = W, h = H;
+      if (type === 'wipe_left') { x = Math.round(W * (1 - t)); w = W - x; }
+      else if (type === 'wipe_right') w = Math.round(W * t);
+      else if (type === 'wipe_up') { y = Math.round(H * (1 - t)); h = H - y; }
+      else h = Math.round(H * t);
+      if (w > 0 && h > 0) target.drawImage(b, x, y, w, h, x, y, w, h);
+    } else if (type === 'slide_left') {
+      const x = Math.round(W * t);
+      target.drawImage(a, -x, 0);
+      target.drawImage(b, W - x, 0);
+    } else if (type === 'zoom') {
+      const e = t * t * (3 - 2 * t);
+      const za = 1 + 0.25 * e, zb = 1.25 - 0.25 * e;
+      target.drawImage(a, W / 2 - W * za / 2, H / 2 - H * za / 2, W * za, H * za);
+      target.globalAlpha = e;
+      target.drawImage(b, W / 2 - W * zb / 2, H / 2 - H * zb / 2, W * zb, H * zb);
+    } else {
+      target.drawImage(a, 0, 0);
+      target.globalAlpha = t;
+      target.drawImage(b, 0, 0);
+    }
+    target.restore();
   }
 
   function draw() {
@@ -464,11 +627,12 @@ const Engine = (() => {
 
   /** クリップの置き場所（作品の画素）。大きさが分からなければ素材の情報から */
   function clipBox(c) {
-    if (c.text && !c.media) return TelopDraw.bounds(p, c);
-    if (c.fill && !c.media) return { cx: p.width / 2, cy: p.height / 2, w: p.width, h: p.height, rot: 0 };
+    const tr = Keys.transform(c, frame);
+    if (c.text && !c.media) return TelopDraw.bounds(p, c, tr);
+    if (c.fill && !c.media) return { cx: p.width / 2 + tr.pos_x, cy: p.height / 2 + tr.pos_y, w: p.width * tr.scale, h: p.height * tr.scale, rot: tr.rotation || 0 };
     const m = p.media[c.media];
     if (!m || !m.width) return null;
-    return placement(c, m.width, m.height);
+    return placement(c, m.width, m.height, tr);
   }
 
   /** 確かめ用: 動画の要素ごとの「あるべき位置」と実際の位置 */
@@ -481,6 +645,6 @@ const Engine = (() => {
 
   return {
     attach, setProject, setOverlay, on, play, pause, stop, toggle, seek, refresh, resize, requestDraw, position, isPlaying,
-    preloadAudio, clipAtPoint, clipBox, visibleClips, fadeFactor, placement, drawFrame, debugVideos,
+    preloadAudio, clipAtPoint, clipBox, visibleClips, trackStates, fadeFactor, placement, drawFrame, debugVideos, renderMix, audioEntries,
   };
 })();

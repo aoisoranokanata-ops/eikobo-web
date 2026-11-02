@@ -2,7 +2,7 @@
    映工房 Web — 共通の小物
    ファイルを直したら、APP_VERSION と sw.js の VERSION を必ず両方上げること。
    ------------------------------------------------------------ */
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));

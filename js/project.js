@@ -61,6 +61,15 @@ const Proj = (() => {
     return { ...JSON.parse(JSON.stringify(c)), ...changes };
   }
 
+  /** 分割した片方から、切れ目の側のモーション（左は退場、右は登場）を外す */
+  function dropMotion(c, kind) {
+    if (c.motion && c.motion[kind]) {
+      const m = { ...c.motion };
+      delete m[kind];
+      c.motion = Object.keys(m).length ? m : null;
+    }
+  }
+
   function limited(p, c) {
     if (!c.media) return false;
     const m = p.media[c.media];
@@ -123,23 +132,26 @@ const Proj = (() => {
       if (c.start >= a && end(c) <= b) {
         delete p.clips[c.id];
       } else if (c.start < a && end(c) > b) {
-        const right = clone(c, { id: uid('c'), link: null, trans_in: null, fade_in: 0 });
+        const right = clone(c, { id: uid('c'), link: null, trans_in: null });
         right.src_in = c.src_in + (b - c.start) / f * c.speed;
         right.duration = end(c) - b;
         right.start = b;
+        dropMotion(right, 'in');
+        Keys.shift(right, b - c.start);
         p.clips[right.id] = right;
         c.duration = a - c.start;
-        c.fade_out = 0;
+        dropMotion(c, 'out');
       } else if (c.start < a) {
         c.duration = a - c.start;
-        c.fade_out = 0;
+        dropMotion(c, 'out');
       } else {
         const cut = b - c.start;
         c.src_in += cut / f * c.speed;
         c.start = b;
         c.duration -= cut;
         c.trans_in = null;
-        c.fade_in = 0;
+        dropMotion(c, 'in');
+        Keys.shift(c, cut);
       }
     }
   }
@@ -218,6 +230,35 @@ const Proj = (() => {
     return addClip(p, { id: uid('c'), track: tid, start: a, duration: dur, media: null, text, style: null, name: '' }, false);
   }
 
+  /** カラーマット（色だけのクリップ）を置く */
+  function insertFill(p, frame, color, seconds = 5) {
+    const a = Math.max(0, Math.round(frame)), dur = Math.max(1, Math.round(seconds * fps(p)));
+    const tid = freeTrack(p, 'video', a, a + dur);
+    return addClip(p, { id: uid('c'), track: tid, start: a, duration: dur, media: null, fill: color, name: 'カラー' }, false);
+  }
+
+  /** 前のクリップとの切れ目のトランジション（kind=null で外す）。リンクした音声にはクロスフェード（exe の set_transition） */
+  function setTransition(p, c, kind, frames) {
+    const n = frames || Math.round(fps(p) * 0.5);
+    const out = [];
+    for (const x of withLinks(p, [c.id])) {
+      const prev = Object.values(p.clips).find((q) => q.track === x.track && end(q) === x.start && q.enabled);
+      if (!kind) { x.trans_in = null; continue; }
+      if (!prev) { x.fade_in = Math.max(1, Math.min(n, x.duration - 1)); continue; }
+      const nn = Math.max(2, Math.min(n, (x.duration - 1) * 2, (prev.duration - 1) * 2));
+      x.trans_in = { type: track(p, x.track).kind === 'video' ? kind : 'dissolve', frames: nn };
+      out.push(x);
+    }
+    return out;
+  }
+
+  /** トランジションの効く範囲 [開始, 終了)（切れ目を中心に） */
+  function transitionZone(c) {
+    const n = Math.max(2, Math.trunc((c.trans_in && c.trans_in.frames) || 15));
+    const h1 = Math.floor(n / 2);
+    return [c.start - h1, c.start + (n - h1)];
+  }
+
   /** SRT などの字幕 [{start, end（秒）, text}] を新しい字幕トラックに並べる。重なる時は前の字幕を詰める */
   function addCues(p, cues) {
     const t = addTrack(p, 'subtitle');
@@ -283,8 +324,9 @@ const Proj = (() => {
         piece.src_in = c.src_in + (ps - c.start) / f * c.speed;
         piece.start = ps - removedBefore(ps, ranges);
         piece.duration = pe - ps;
-        if (ps !== c.start) { piece.fade_in = 0; piece.trans_in = null; }
-        if (pe !== end(c)) piece.fade_out = 0;
+        Keys.shift(piece, ps - c.start);
+        if (ps !== c.start) { piece.fade_in = 0; piece.trans_in = null; dropMotion(piece, 'in'); }
+        if (pe !== end(c)) { piece.fade_out = 0; dropMotion(piece, 'out'); }
         if (c.link) {
           const key = c.link + '@' + ps;
           if (!relink.has(key)) {
@@ -322,6 +364,9 @@ const Proj = (() => {
     const cut = frame - c.start;
     const right = clone(c, { id: uid('c'), start: frame, duration: c.duration - cut, fade_in: 0, trans_in: null });
     right.src_in = c.src_in + cut / fps(p) * c.speed;
+    dropMotion(right, 'in');
+    dropMotion(c, 'out');
+    Keys.shift(right, cut);
     c.fade_out = 0;
     c.duration = cut;
     p.clips[right.id] = right;
@@ -384,6 +429,7 @@ const Proj = (() => {
         x.src_in = Math.max(0, x.src_in + delta / f * x.speed);
         x.start += delta;
         x.duration -= delta;
+        Keys.shift(x, delta);
       } else {
         x.duration += delta;
       }
@@ -486,7 +532,7 @@ const Proj = (() => {
   return {
     SCHEMA, CLIP_DEFAULTS, create, normalize, fps, end, track, tracksOf, clipsOn, duration, linked, srcAt, withLinks, limited,
     mergeRanges, subtractRanges, removedBefore, clearRange, addClip, isFree, freeTrack, addTrack, mediaFrames, insertMedia,
-    insertText, insertSubtitle, addCues, subtitleClips,
+    insertText, insertSubtitle, addCues, subtitleClips, insertFill, setTransition, transitionZone, dropMotion,
     deleteClips, emptyRanges, rippleDeleteRanges, splitAt, trimLimits, trim, moveClips, unlink, setSpeed, setFps,
     checkOverlaps, snapshot, restore, History,
   };
