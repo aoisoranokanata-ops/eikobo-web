@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>映工房 Web — Google にサインイン</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #16181c; color: #e6e8ec;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; }
+  main { max-width: 460px; margin: 0 auto; padding: 60px 24px; text-align: center; }
+  a { color: #8fb4ff; }
+</style>
+</head>
+<body>
+<main>
+  <p id="msg">サインインしています…</p>
+  <p><a href="./">映工房 Web に戻る</a></p>
+</main>
+<script>
+/* Google のサインイン（OAuth のトークンだけの流れ）から戻ってくる所。js/gdrive.js の GDrive.signIn と組。
+   トークンを localStorage に置き（state が合う時だけ）、小窓なら閉じる・ページごと来た時はアプリへ戻る。 */
+(function () {
+  'use strict';
+  var P = 'eikobo-web:';
+  var h = new URLSearchParams(location.hash.slice(1));
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* トークンを URL に残さない */ }
+  var auth = {};
+  try { auth = JSON.parse(localStorage.getItem(P + 'gdrive-auth') || '{}') || {}; } catch (e) { /* */ }
+  var msg = document.getElementById('msg');
+  var state = h.get('state');
+  if (!state || state !== auth.state) { msg.textContent = 'サインインを確かめられませんでした。映工房からやり直してください。'; return; }
+  var rec = { state: state, at: Date.now() };
+  if (h.get('access_token')) {
+    rec.token = h.get('access_token');
+    rec.exp = Date.now() + (parseInt(h.get('expires_in'), 10) || 3600) * 1000;
+    rec.scope = h.get('scope') || '';
+  } else rec.error = h.get('error') || 'unknown';
+  try { localStorage.setItem(P + 'gdrive-token', JSON.stringify(rec)); } catch (e) { msg.textContent = 'サインインを保存できませんでした（プライベートブラウズでは使えません）。'; return; }
+  if (auth.mode === 'redirect') { location.replace('./'); return; }
+  try { if (window.opener) window.opener.postMessage({ eikoboGauth: state }, location.origin); } catch (e) { /* */ }
+  msg.textContent = rec.token ? 'サインインしました。このタブを閉じて映工房に戻ってください。' : 'サインインできませんでした（' + rec.error + '）。';
+  setTimeout(function () { window.close(); }, 300);
+})();
+</script>
+</body>
+</html>

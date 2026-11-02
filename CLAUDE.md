@@ -44,6 +44,7 @@
 | js/ekp.js | 映工房（exe）の .ekp との変換と、ZIP（.ekp ＋ media/ ＋ luts/）の書き出し・読み込み |
 | js/timeline.js | タイムライン（canvas、指・Pencil・マウス） |
 | js/inspector.js | 調整パネル |
+| js/gdrive.js | Google Drive（サインイン・ファイルを選ぶ画面・受け取り・分割で送る・作品のバックアップ/戻す）。oauth.html が戻り先 |
 | js/app.js | 作品一覧・編集画面のつなぎ・素材の一覧・キーボード・自動保存 |
 
 ## 設計の要点
@@ -158,6 +159,22 @@
   補正後の揺れ 6.5 → 0.08 画素/コマ。書き出した動画をもう一度解析して 0.23 画素/コマ・回転 0.18 → 0.02°/コマ、端の黒は出ない。
 - クリップの `stab = {on, strength, zoom}` は .ekp にも書く（exe は知らない項目を読み飛ばす）。解析の結果は IndexedDB の stab（素材 ID ごと。
   素材を消すと一緒に消す）。クリップの範囲を超えたら「解析し直す」（前の範囲も含めて解析）。
+### Google Drive（v1.2.0）の要点
+- 紙工房 Web の js/gdrive.js・oauth.html と同じ作り（ライブラリ無し、OAuth のトークンだけの流れ＋ Drive REST v3 を fetch / XHR で）。
+  クライアント ID は利用者が作って貼る（localStorage `eikobo-web:gdrive`）。同じオリジンなので**紙工房 Web と同じクライアント ID を使える**
+  （設定の画面で `kamikobo-web.gdrive` を読んで入れておく。Google Cloud で「承認済みのリダイレクト URI」に eikobo-web/oauth.html を足すだけ）。
+  権限は drive.file ＋ drive.readonly、保存先はマイドライブの「映工房 Web」フォルダ。
+- サインイン: Safari のタブ＝小窓（oauth.html が `eikobo-web:gdrive-token` に置き、本体は 0.5 秒ごとに見る）。ホーム画面アプリ・小窓が
+  開けない時＝ページごと移る → oauth.html → `./` → 起動時の `GDrive.resume` が続きをする（編集中だった作品を開き直す。送りかけのファイルは
+  OPFS の eikobo-web/export/gd-pending）。小窓はクリックの中でしか開けないので `GDrive.go` はボタンの中で await より前に呼ぶ。
+- 動画は大きいので: 受け取りは OPFS（export/gd-…）へ 4MB ずつ流して File にし、使い終わったら消す（cleanTemp）。
+  送るのは resumable を 32MB ずつ（Content-Range）。通信が切れたら待って `bytes */全体` で受け取り済みの所を聞き、続きから（6 回まで）。やめられる。
+- 入口: 作品一覧の「☁️ Google Drive」（作品を読み込む・バックアップから戻す・すべての作品をバックアップ・クライアント ID・サインアウト）、
+  作品の ⋯「☁️ Google Drive にバックアップ」（= 「Windows 版へ・バックアップ」と同じ .zip）、素材の「☁️ Drive」（動画・音声・画像）、
+  見つからない素材の「☁️ Google Drive から選ぶ」（名前で結ぶ = App.linkFiles）、書き出し・.zip の後の「☁️ Google Drive に保存」。
+- sw.js は ./ と index.html だけを index.html として覚える（oauth.html を混ぜない）。
+- 確かめ方: Playwright で accounts.google.com・googleapis.com を route で偽物にして（302 で oauth.html#access_token=…、
+  resumable は Location と 308 + Range）、小窓とページごと（window.open = () => null）の両方を通した。
 
 ## 確かめ方
 - 開発サーバー: `.claude/launch.json` の `eikobo-web`（`python eikobo-web/tools/devserver.py 8678`）。no-store、`PUT /tools/fixtures/<名前>` で
@@ -188,6 +205,8 @@
    プロキシ（重い素材の軽い代わり）は入れていない（iPad の動画の再生は OS のハードウェアに任せている）。
 7. **AI 高画質化・手ぶれ補正（v1.1.0、2026-11-03）**: 書き出しで AI 高画質化（Real-ESRGAN、4 倍、480p → 1080p など）、
    書き出しの大きさに拡大を追加、クリップの手ぶれ補正（動きの解析）。iPad 実機の WebGPU・速さは未確認。
+8. **Google Drive（v1.2.0、2026-11-03）**: 紙工房 Web と同じ形で。作品のバックアップ（.zip）と戻す、ドライブの .ekp / .zip を読み込む、
+   素材（動画・音声・画像）の読み込み・見つからない素材を名前で結ぶ、書き出した動画・.zip の保存。
 
 ## 既知の割り切り（フェーズ1）
 - 音声は作品を開いている間メモリに置く（10 分のステレオで約 230MB）。とても長い素材は重い。エフェクトを掛けたクリップは
