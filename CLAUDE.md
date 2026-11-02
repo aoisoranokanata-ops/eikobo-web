@@ -71,6 +71,14 @@
   書き出しに毎回キーフレームが出た）。
 - Worker への書き込みはバッファを「転送」するので、書いた後の Uint8Array は長さ 0。長さは書く前に測る（mux.js）。
 - 音声の時刻: AAC の頭の遅れ（priming）には編集リストを付けていないが、ffmpeg で測ってずれ 0ms だった（Chrome）。
+- **AAC の設定（AudioSpecificConfig）は `Mux.aacConfig` で取り出す**（v1.2.1）。iPad で書き出した動画が写真アプリで無音だった。
+  前は `description.buffer` をそのまま使っていて、view（大きな ArrayBuffer の一部）で来ると関係ないバイトまで入り、AAC が読めなくなる
+  （avcC の方は byteOffset を守っていた）。esds の箱・ES_Descriptor の形でも DecoderSpecificInfo を探し、48kHz・2ch の AAC でなければ
+  既定（11 90）。中身が ADTS なら頭を外す（`Mux.stripAdts`）。`node tools/test_aac_mux.cjs` で各形を作り ffmpeg で鳴ることを確認
+  （前の作りは decode エラー）。
+- さらに書き出しの中で、作った AAC の大きい所 3 秒をその端末の AudioDecoder で戻し、元の RMS の 1/4 未満・エラーなら
+  無圧縮の PCM（MOV）に切り替える（`verifyAac`）。書き出し後の画面に「音声: AAC…この端末で鳴ることを確認済み／無圧縮（MOV）…／無音です」を出す。
+  MOV の hdlr は QuickTime の決まりどおり 'mhlr'。確かめは Playwright で偽の AudioEncoder（Safari の形の description・壊れた中身）を入れて書き出し → ffmpeg。
 - 共有（navigator.share）は押した操作の中でしか呼べない → 書き出しが終わったら「共有・写真に保存」ボタンを出す。
 - 速さ（この PC の Chrome）: 1080p で実時間の約 2 倍（2:25 の MV が 77 秒）。I420 の換算と getImageData が半分くらい。
 - 確かめる道具: `tools/sync_check.py`（光と音のずれ、試験素材は sync.mp4）、`tools/frame_map.py`（書き出しの各コマが元のどのコマか）。
@@ -207,6 +215,7 @@
    書き出しの大きさに拡大を追加、クリップの手ぶれ補正（動きの解析）。iPad 実機の WebGPU・速さは未確認。
 8. **Google Drive（v1.2.0、2026-11-03）**: 紙工房 Web と同じ形で。作品のバックアップ（.zip）と戻す、ドライブの .ekp / .zip を読み込む、
    素材（動画・音声・画像）の読み込み・見つからない素材を名前で結ぶ、書き出した動画・.zip の保存。
+   v1.2.1: iPad で書き出した動画が写真アプリで無音になる不具合を直した（AAC の設定の取り出し・端末での確かめ・だめなら PCM の MOV）。
 
 ## 既知の割り切り（フェーズ1）
 - 音声は作品を開いている間メモリに置く（10 分のステレオで約 230MB）。とても長い素材は重い。エフェクトを掛けたクリップは

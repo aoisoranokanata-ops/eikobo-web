@@ -276,16 +276,21 @@ const Exporter = (() => {
 
   // 音声は Engine.renderMix（再生と同じ混ぜ方: 音量のキー・フェード・クロスフェード）
 
-  /** AAC にする。返り値 {chunks: [{data, frames, t}], asc} */
+  /**
+   * AAC にする。返り値 {chunks: [{data, frames, t}], asc, from}
+   * description は Safari では大きな ArrayBuffer の一部の view や esds の形で来ることがある → Mux.aacConfig で
+   * 本当の AudioSpecificConfig を取り出す（.buffer をそのまま使うと設定が壊れ、写真アプリで無音になった）。
+   */
   async function encodeAac(buf, cancelled) {
     const chunks = [];
-    let asc = null;
+    let desc = null;
     let err = null;
     const enc = new AudioEncoder({
       output: (chunk, meta) => {
-        if (meta && meta.decoderConfig && meta.decoderConfig.description) asc = new Uint8Array(meta.decoderConfig.description.buffer || meta.decoderConfig.description).slice();
-        const data = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(data);
+        if (meta && meta.decoderConfig && meta.decoderConfig.description && !desc) desc = Mux.bytesOf(meta.decoderConfig.description);
+        const raw = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(raw);
+        const data = Mux.stripAdts(raw);
         chunks.push({ data, frames: Math.max(1, Math.round((chunk.duration || 21333) * SR / 1e6)), t: chunk.timestamp / 1e6 });
       },
       error: (e) => { err = e; },
@@ -308,8 +313,72 @@ const Exporter = (() => {
     await enc.flush();
     enc.close();
     if (err) throw err;
-    // AAC-LC・48kHz・2ch の既定（説明が来なかった時）
-    return { chunks, asc: asc || new Uint8Array([0x11, 0x90]) };
+    const cfg = Mux.aacConfig(desc, SR, 2);       // 読めない時は AAC-LC・48kHz・2ch の既定
+    return { chunks, asc: cfg.asc, from: cfg.from };
+  }
+
+  /** 書き出した音の大きさ（全体のピークと RMS、dB） */
+  function mixLevel(buf) {
+    let peak = 0, sum = 0;
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > peak) peak = v; sum += v * v; }
+    }
+    const db = (x) => (x > 0 ? 20 * Math.log10(x) : -Infinity);
+    return { peakDb: db(peak), rmsDb: db(Math.sqrt(sum / Math.max(1, buf.length * 2))) };
+  }
+
+  /**
+   * 作った AAC を、この端末の AudioDecoder で実際に戻して鳴るか確かめる（いちばん大きい所の約 3 秒）。
+   * 返り値: 'ok' | 'bad'（壊れている・無音）| null（確かめられない・元が無音）
+   */
+  async function verifyAac(r, mix) {
+    if (!window.AudioDecoder || !r.chunks.length) return null;
+    const cfg = { codec: 'mp4a.40.2', sampleRate: SR, numberOfChannels: 2, description: r.asc };
+    try { if (!(await AudioDecoder.isConfigSupported(cfg)).supported) return null; } catch { return null; }
+    // 0.5 秒ごとの大きさで、いちばん大きい所を探す
+    const L = mix.getChannelData(0), R = mix.getChannelData(1);
+    const STEP = SR / 2;
+    let best = 0, bestE = -1;
+    for (let p = 0; p < mix.length; p += STEP) {
+      let e = 0;
+      const end = Math.min(mix.length, p + STEP);
+      for (let i = p; i < end; i += 4) e += L[i] * L[i] + R[i] * R[i];
+      if (e > bestE) { bestE = e; best = p; }
+    }
+    const t0 = Math.max(0, best / SR - 0.5), t1 = t0 + 3;
+    let ref = 0, refN = 0;
+    for (let i = Math.round(t0 * SR); i < Math.min(mix.length, Math.round(t1 * SR)); i++) { ref += L[i] * L[i] + R[i] * R[i]; refN += 2; }
+    const refRms = Math.sqrt(ref / Math.max(1, refN));
+    if (refRms < 1e-4) return null;                 // 元が無音なら確かめようがない
+    // 確かめる所の少し前から入れる（AAC は前のフレームが要る）
+    const list = r.chunks.filter((c) => c.t >= t0 - 0.2 && c.t < t1);
+    let sum = 0, n = 0, err = null;
+    const dec = new AudioDecoder({
+      output: (ad) => {
+        try {
+          const ch = ad.numberOfChannels;
+          const planar = /planar/.test(ad.format);
+          for (let k = 0; k < (planar ? ch : 1); k++) {
+            const f = new Float32Array(ad.numberOfFrames * (planar ? 1 : ch));
+            ad.copyTo(f, { planeIndex: k, format: planar ? 'f32-planar' : 'f32' });
+            for (let i = 0; i < f.length; i++) { sum += f[i] * f[i]; n++; }
+          }
+        } catch (e) { err = e; }
+        ad.close();
+      },
+      error: (e) => { err = e; },
+    });
+    try {
+      dec.configure(cfg);
+      for (const c of list) dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(c.t * 1e6), data: c.data }));
+      await dec.flush();
+    } catch (e) { err = err || e; }
+    try { dec.close(); } catch { /* 済み */ }
+    if (err) { console.warn('AAC を確かめられませんでした', err); return 'bad'; }
+    const rms = Math.sqrt(sum / Math.max(1, n));
+    console.info(`AAC の確かめ: 元 ${refRms.toFixed(4)} / 戻した音 ${rms.toFixed(4)}`);
+    return rms > refRms * 0.25 ? 'ok' : 'bad';
   }
 
   /** 16bit PCM（0.1 秒ごとのかたまり） */
@@ -395,13 +464,25 @@ const Exporter = (() => {
       if (cancelled) throw new Error('cancel');
       let audio = null;
       let aChunks = [];
+      const aInfo = { mix: !!mix, level: mix ? mixLevel(mix) : null, aac: false, check: null, fellBack: false };
       if (mix) {
         if (await aacSupported()) {
           pb.set('音声を AAC にしています', 0.02);
-          const r = await encodeAac(mix, isCancelled);
-          aChunks = r.chunks;
-          audio = { codec: 'aac', sampleRate: SR, channels: 2, asc: r.asc, bitrate: 192000 };
-        } else {
+          let r = null;
+          try { r = await encodeAac(mix, isCancelled); } catch (e) { if (cancelled) throw e; console.warn('AAC にできませんでした', e); }
+          if (cancelled) throw new Error('cancel');
+          if (r && r.chunks.length) {
+            pb.set('音声を確かめています', 0.03);
+            aInfo.check = await verifyAac(r, mix);
+            aInfo.from = r.from;
+          }
+          if (r && r.chunks.length && aInfo.check !== 'bad') {
+            aChunks = r.chunks;
+            audio = { codec: 'aac', sampleRate: SR, channels: 2, asc: r.asc, bitrate: 192000 };
+            aInfo.aac = true;
+          } else aInfo.fellBack = true;               // AAC が鳴らない → 確実に鳴る無圧縮の PCM（MOV）にする
+        }
+        if (!audio) {
           aChunks = encodePcm(mix);
           audio = { codec: 'pcm', sampleRate: SR, channels: 2 };
         }
@@ -484,7 +565,7 @@ const Exporter = (() => {
       const file = new File([head, body], name, { type });
       pb.close();
       const sec = (performance.now() - t0) / 1000;
-      deliver(file, sec, mov, n / fps);
+      deliver(file, sec, mov, n / fps, aInfo);
       return file;
     } catch (err) {
       pb.close();
@@ -506,12 +587,22 @@ const Exporter = (() => {
     return (s || '映工房').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || '映工房';
   }
 
-  function deliver(file, sec, mov, dur) {
+  /** 書き出した音声の説明（1 行） */
+  function audioNote(mov, a) {
+    if (!a || !a.mix) return '音声: なし（タイムラインに音の出るクリップがありません）';
+    const lv = a.level && isFinite(a.level.peakDb) ? `ピーク ${a.level.peakDb.toFixed(1)} dB` : '';
+    if (a.level && !(a.level.peakDb > -70)) return '音声: 無音です（クリップの音量・ミュート・ミキサーを確かめてください）';
+    if (a.aac) return `音声: AAC 192kbps・${lv}${a.check === 'ok' ? '・この端末で鳴ることを確認済み' : ''}`;
+    if (a.fellBack) return `音声: 無圧縮（MOV）・${lv}。この端末の AAC では音が出なかったため切り替えました。`;
+    return `音声: 無圧縮（MOV）・${lv}。この端末は AAC に書き出せないため。`;
+  }
+
+  function deliver(file, sec, mov, dur, aInfo) {
     lastUrl = URL.createObjectURL(file);
     const canShare = navigator.canShare && navigator.canShare({ files: [file] });
     const body = h('div', null,
       h('p', { class: 'modal-text' }, `${file.name}\n${fmtBytes(file.size)}・長さ ${fmtDur(dur)}・かかった時間 ${fmtDur(sec)}`),
-      mov ? h('p', { class: 'hint' }, 'この端末は AAC に書き出せないため、音声は無圧縮（MOV）にしました。') : null,
+      h('p', { class: 'hint' }, audioNote(mov, aInfo)),
       h('video', { src: lastUrl, controls: true, playsinline: true, class: 'export-preview' }));
     const buttons = [];
     if (canShare) {
@@ -535,5 +626,5 @@ const Exporter = (() => {
     loop();
   }
 
-  return { open, run, videoConfig, aacSupported, outSize, aiTargets, framePainter, tryAi };
+  return { open, run, videoConfig, aacSupported, outSize, aiTargets, framePainter, tryAi, verifyAac };
 })();

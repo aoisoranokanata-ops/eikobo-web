@@ -166,7 +166,7 @@ const Mux = (() => {
       const minf = box('minf', fbox('vmhd', 0, 1, new W().zeros(8).bytes()), box('dinf', fbox('dref', 0, 0, new W().u32(1).bytes(), fbox('url ', 0, 1))), stbl);
       const mdia = box('mdia',
         fbox('mdhd', 0, 0, new W().u32(0).u32(0).u32(o.timescale).u32(mediaDur).u16(0x55c4).u16(0).bytes()),
-        fbox('hdlr', 0, 0, new W().u32(0).str('vide').zeros(12).str('VideoHandler').u8(0).bytes()),
+        fbox('hdlr', 0, 0, (this.o.mov ? new W().str('mhlr') : new W().u32(0)).str('vide').zeros(12).str('VideoHandler').u8(0).bytes()),
         minf);
       const edts = shift ? box('edts', fbox('elst', 0, 0, new W().u32(1).u32(movieDur).i32(shift).u32(0x10000).bytes())) : null;
       return box('trak', this.tkhd(1, movieDur, o.width, o.height, false), ...(edts ? [edts] : []), mdia);
@@ -205,13 +205,96 @@ const Mux = (() => {
       const minf = box('minf', fbox('smhd', 0, 0, new W().u32(0).bytes()), box('dinf', fbox('dref', 0, 0, new W().u32(1).bytes(), fbox('url ', 0, 1))), stbl);
       const mdia = box('mdia',
         fbox('mdhd', 0, 0, new W().u32(0).u32(0).u32(o.sampleRate).u32(total).u16(0x55c4).u16(0).bytes()),
-        fbox('hdlr', 0, 0, new W().u32(0).str('soun').zeros(12).str('SoundHandler').u8(0).bytes()),
+        fbox('hdlr', 0, 0, (this.o.mov ? new W().str('mhlr') : new W().u32(0)).str('soun').zeros(12).str('SoundHandler').u8(0).bytes()),
         minf);
       return box('trak', this.tkhd(2, movieDur, 0, 0, true), mdia);
     }
   }
 
-  return { Muxer, box, fbox };
+  // hdlr の pre_defined は MOV では QuickTime の決まりどおり 'mhlr'（MP4 は 0）
+
+  // ---- AAC の設定と中身を整える（Safari の AudioEncoder 対策） ------------------------
+  // 書き出した動画が写真アプリで無音になった。AudioSpecificConfig（2 バイト）の代わりに esds の中身（ES_Descriptor）や
+  // 大きな ArrayBuffer の一部の view が来ても、ここで本当の AudioSpecificConfig を取り出す。中身が ADTS なら頭を外す。
+
+  /** ArrayBuffer / view → そのバイトだけの Uint8Array（view の時は byteOffset・byteLength を守る） */
+  function bytesOf(d) {
+    if (!d) return null;
+    if (d instanceof ArrayBuffer) return new Uint8Array(d.slice(0));
+    if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
+    return null;
+  }
+
+  const SF = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+  /** AAC-LC の AudioSpecificConfig（2 バイト） */
+  function makeAsc(sampleRate, channels) {
+    const sfi = Math.max(0, SF.indexOf(sampleRate));
+    return new Uint8Array([(2 << 3) | (sfi >> 1), ((sfi & 1) << 7) | (channels << 3)]);
+  }
+  /** AudioSpecificConfig を読む（{aot, rate, channels}、読めなければ null） */
+  function parseAsc(a) {
+    if (!a || a.length < 2) return null;
+    const aot = a[0] >> 3;
+    const sfi = ((a[0] & 7) << 1) | (a[1] >> 7);
+    if (aot < 1 || aot > 4 || sfi === 15 || sfi >= SF.length) return null;   // 1〜4（AAC Main・LC・SSR・LTP）だけ
+    const channels = (a[1] >> 3) & 15;
+    if (channels < 1 || channels > 7) return null;
+    return { aot, rate: SF[sfi], channels };
+  }
+  /** esds（箱・中身・ES_Descriptor）から DecoderSpecificInfo（= AudioSpecificConfig）を探す */
+  function findDsi(b) {
+    const len = (i) => { let n = 0, k = 0; for (;;) { const c = b[i++]; n = (n << 7) | (c & 0x7f); if (!(c & 0x80) || ++k >= 4) break; } return [n, i]; };
+    const walk = (s, e) => {
+      while (s + 2 <= e && s < b.length) {
+        const tag = b[s];
+        const [n, p] = len(s + 1);
+        if (tag === 0x05) return b.slice(p, p + n);
+        if (tag === 0x03) {            // ES_Descriptor: ES_ID(2)・印(1)・あれば依存 ID・URL・OCR
+          let q = p + 2;
+          const fl = b[q++];
+          if (fl & 0x80) q += 2;
+          if (fl & 0x40) q += 1 + b[q];
+          if (fl & 0x20) q += 2;
+          const r = walk(q, p + n); if (r) return r;
+        } else if (tag === 0x04) {     // DecoderConfigDescriptor: 13 バイトの後に DecoderSpecificInfo
+          const r = walk(p + 13, p + n); if (r) return r;
+        }
+        if (!n) return null;
+        s = p + n;
+      }
+      return null;
+    };
+    const name = (i) => String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
+    let start = 0;
+    if (b.length > 12 && name(4) === 'esds') start = 12;        // 箱ごと（大きさ・'esds'・版と印）
+    else if (b.length > 5 && b[0] === 0 && b[4] === 0x03) start = 4;   // 箱の中身（版と印から）
+    return walk(start, b.length);
+  }
+  /**
+   * AudioEncoder の decoderConfig.description → 使える AudioSpecificConfig。
+   * 返り値 {asc, from: 'asc' | 'esds' | 'default'}（from は確かめ用）
+   */
+  function aacConfig(desc, sampleRate, channels) {
+    const want = (a) => { const c = parseAsc(a); return c && c.rate === sampleRate && c.channels === channels ? a : null; };
+    const b = bytesOf(desc);
+    if (b && b.length) {
+      if (want(b) && b.length <= 5) return { asc: b, from: 'asc' };
+      const d = findDsi(b);
+      if (d && want(d)) return { asc: d, from: 'esds' };
+    }
+    return { asc: makeAsc(sampleRate, channels), from: 'default' };
+  }
+  /** ADTS の頭が付いていたら外す（MP4 の中は生の AAC フレーム） */
+  function stripAdts(u8) {
+    if (u8.length > 7 && u8[0] === 0xff && (u8[1] & 0xf6) === 0xf0) {
+      const flen = ((u8[3] & 3) << 11) | (u8[4] << 3) | (u8[5] >> 5);
+      const hl = (u8[1] & 1) ? 7 : 9;
+      if (flen === u8.length && flen > hl) return u8.subarray(hl);
+    }
+    return u8;
+  }
+
+  return { Muxer, box, fbox, bytesOf, makeAsc, parseAsc, aacConfig, stripAdts };
 })();
 
 if (typeof module !== 'undefined') module.exports = Mux;
