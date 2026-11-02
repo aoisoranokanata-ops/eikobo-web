@@ -190,6 +190,16 @@ const Store = (() => {
     };
   }
 
+  /** eikobo-web/export/<name> のファイル（File）。無ければ null */
+  async function readExport(name) {
+    if (!hasOpfs) return null;
+    try {
+      let d = await navigator.storage.getDirectory();
+      d = await (await d.getDirectoryHandle('eikobo-web')).getDirectoryHandle('export');
+      return await (await d.getFileHandle(name)).getFile();
+    } catch { return null; }
+  }
+
   async function removeExport(name) {
     if (!hasOpfs) return;
     try {
@@ -200,5 +210,5 @@ const Store = (() => {
     } catch { /* 無ければよい */ }
   }
 
-  return { get, all, put, del, writeFile, readFile, removeFile, estimate, persist, hasOpfs, openStream, removeExport };
+  return { get, all, put, del, writeFile, readFile, removeFile, estimate, persist, hasOpfs, openStream, readExport, removeExport };
 })();

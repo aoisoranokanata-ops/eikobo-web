@@ -170,9 +170,10 @@ const App = (() => {
   async function projectMenu(pr) {
     const v = await showDialog({
       title: pr.name,
-      buttons: [{ label: '名前を変える', value: 'rename' }, { label: '複製', value: 'dup' }, { label: 'Windows 版へ・バックアップ（.zip）', value: 'zip' }, { label: '削除', value: 'del', danger: true }, { label: '閉じる', value: null }],
+      buttons: [{ label: '名前を変える', value: 'rename' }, { label: '複製', value: 'dup' }, { label: 'Windows 版へ・バックアップ（.zip）', value: 'zip' }, { label: '☁️ Google Drive にバックアップ', value: 'drive' }, { label: '削除', value: 'del', danger: true }, { label: '閉じる', value: null }],
     });
     if (v === 'zip') { await exportBundle(pr); return; }
+    if (v === 'drive') { await GDrive.backupDialog([pr.id], `「${pr.name}」`); return; }
     if (v === 'rename') {
       const name = await askText('作品の名前', pr.name);
       if (name) { pr.name = name; await Store.put('projects', pr); renderHome(); }
@@ -225,10 +226,16 @@ const App = (() => {
     const buttons = [];
     if (navigator.canShare && navigator.canShare({ files: [file] })) buttons.push({ label: '共有・保存', primary: true, value: () => { navigator.share({ files: [file] }).catch(() => {}); return 'keep'; } });
     buttons.push({ label: 'ダウンロード', value: () => { const a = h('a', { href: url, download: file.name }); document.body.append(a); a.click(); a.remove(); return 'keep'; } });
+    let drive = null;
+    if (GDrive.configured()) buttons.push({ label: '☁️ Google Drive に保存', value: () => { drive = GDrive.go({ kind: 'upload', blob: file, name: file.name }); return 'keep'; } });
     buttons.push({ label: '閉じる', value: null });
     const body = h('p', { class: 'modal-text' }, `${file.name}（${fmtBytes(file.size)}）` + (missing.length ? `
 この端末に無い素材は入れられませんでした: ${missing.join('、')}` : ''));
-    for (;;) { const v = await showDialog({ title: '書き出しました', body, buttons }); if (v !== 'keep') break; }
+    for (;;) {
+      const v = await showDialog({ title: '書き出しました', body, buttons });
+      if (drive) { await drive; drive = null; }         // 送り終わってから出し直す
+      if (v !== 'keep') break;
+    }
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
@@ -297,12 +304,14 @@ const App = (() => {
   function renderBin() {
     const list = $('#binList');
     list.textContent = '';
+    $('#btnDriveMedia').hidden = !GDrive.configured();
     if (!P) return;
     const items = Object.values(P.media);
     if (mediaMissing.size) {
       list.append(h('div', { class: 'bin-missing' },
         h('span', null, `見つからない素材が ${mediaMissing.size} 個あります。`),
-        h('button', { class: 'small primary', onclick: () => { relinkId = '*'; $('#fileInput').click(); } }, 'まとめて選ぶ（名前で結びます）')));
+        h('button', { class: 'small primary', onclick: () => { relinkId = '*'; $('#fileInput').click(); } }, 'まとめて選ぶ（名前で結びます）'),
+        GDrive.configured() ? h('button', { class: 'small', onclick: () => GDrive.go({ kind: 'relink' }) }, '☁️ Google Drive から選ぶ（名前で結びます）') : null));
     }
     if (!items.length) {
       list.append(h('div', { class: 'bin-empty' }, '「＋ 読み込む」から動画・音声・画像を追加します。', h('br'), '写真アプリ・ファイル・iCloud Drive から選べます。'));
@@ -393,14 +402,19 @@ const App = (() => {
     if (relinkId) {
       const mid = relinkId;
       relinkId = null;
-      const pairs = mid === '*'
-        ? [...mediaMissing].map((id) => [id, files.find((f) => f.name.toLowerCase() === (P.media[id].name || '').toLowerCase() || f.name.toLowerCase() === Ekp.baseName(P.media[id].path).toLowerCase())]).filter(([, f]) => f)
-        : [[mid, files[0]]];
-      if (!pairs.length) { toast('名前の合うファイルがありませんでした'); return; }
-      await relinkFiles(pairs);
+      if (mid === '*') await linkFiles(files);
+      else await relinkFiles([[mid, files[0]]]);
       return;
     }
     await importFiles(Array.from(files));
+  }
+
+  /** 見つからない素材を、名前の合うファイルで差し替える（「まとめて選ぶ」・Google Drive から） */
+  async function linkFiles(files) {
+    if (!P) return;
+    const pairs = [...mediaMissing].map((id) => [id, files.find((f) => f.name.toLowerCase() === (P.media[id].name || '').toLowerCase() || f.name.toLowerCase() === Ekp.baseName(P.media[id].path).toLowerCase())]).filter(([, f]) => f);
+    if (!pairs.length) { toast('名前の合うファイルがありませんでした'); return; }
+    await relinkFiles(pairs);
   }
 
   async function importFiles(files) {
@@ -1021,6 +1035,8 @@ const App = (() => {
     const on = (id, fn) => $(id).addEventListener('click', fn);
     on('#btnNew', newProject);
     on('#btnOpenFile', () => $('#projectInput').click());
+    on('#btnDrive', () => GDrive.homeMenu());
+    on('#btnDriveMedia', () => GDrive.go({ kind: 'media' }));
     $('#projectInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) importProject(f); });
     on('#btnHome', showHome);
     on('#btnName', settingsDialog);
@@ -1062,10 +1078,11 @@ const App = (() => {
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
-    showHome();
+    // Google にサインインしに行って戻ってきた時は、やりかけの事を続ける
+    showHome().then(() => GDrive.resume());
   }
 
-  return { init, edit, importFiles, get project() { return P; }, save, undo, redo, split, place, seek, openProject, showHome };
+  return { init, edit, importFiles, importProject, linkFiles, get project() { return P; }, save, undo, redo, split, place, seek, openProject, showHome };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

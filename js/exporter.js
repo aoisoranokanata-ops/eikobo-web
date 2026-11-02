@@ -368,10 +368,13 @@ const Exporter = (() => {
       });
     }
     buttons.push({ label: 'ダウンロード', primary: !canShare, value: () => { const a = h('a', { href: lastUrl, download: file.name }); document.body.append(a); a.click(); a.remove(); return 'keep'; } });
+    let drive = null;
+    if (GDrive.configured()) buttons.push({ label: '☁️ Google Drive に保存', value: () => { drive = GDrive.go({ kind: 'upload', blob: file, name: file.name }); return 'keep'; } });
     buttons.push({ label: '閉じる', value: 'close' });
     const loop = async () => {
-      // 共有・ダウンロードの後も、閉じるまで出しておく
+      // 共有・ダウンロード・Google Drive の後も、閉じるまで出しておく
       const v = await showDialog({ title: '書き出しました', body, buttons, wide: true });
+      if (drive) { await drive; drive = null; }      // 送り終わってから出し直す
       if (v === 'keep') loop();
     };
     loop();

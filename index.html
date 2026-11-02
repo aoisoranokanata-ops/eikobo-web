@@ -21,6 +21,7 @@
     <h1>映工房 <small>Web</small></h1>
     <span id="homeVer" class="ver"></span>
     <div class="spacer"></div>
+    <button id="btnDrive">☁️ Google Drive</button>
     <button id="btnOpenFile">読み込む（.ekp / .zip）</button>
     <button id="btnNew" class="primary">＋ 新しい作品</button>
   </header>
@@ -42,7 +43,7 @@
 
   <div class="workspace">
     <aside id="bin" class="panel drawer-left">
-      <div class="panel-head"><span>素材</span><button id="btnImport" class="primary small">＋ 読み込む</button></div>
+      <div class="panel-head"><span>素材</span><span class="head-buttons"><button id="btnDriveMedia" class="small" title="Google Drive から読み込む" hidden>☁️ Drive</button><button id="btnImport" class="primary small">＋ 読み込む</button></span></div>
       <div id="binList"></div>
     </aside>
     <section id="viewer">
@@ -119,6 +120,7 @@
 <script src="js/inspector.js"></script>
 <script src="js/mixer.js"></script>
 <script src="js/recorder.js"></script>
+<script src="js/gdrive.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
