@@ -448,6 +448,106 @@ const App = (() => {
     if (v) edit('トラックを足す', () => Proj.addTrack(P, v));
   }
 
+  // ---- テロップ・字幕 --------------------------------------------------------------
+  function addText() {
+    let c = null;
+    if (edit('テキストを置く', () => { c = Proj.insertText(P, Engine.position(), 'テロップ', Telop.defaultTextStyle()); })) {
+      Timeline.select([c.id], c.id);
+      $('#inspector').classList.add('open');
+      setTimeout(() => { const ta = $('#inspector .insp-textarea'); if (ta) { ta.focus(); ta.select(); } }, 50);
+    }
+  }
+
+  async function subtitleMenu() {
+    const n = Proj.subtitleClips(P).length;
+    const v = await showDialog({
+      title: '字幕',
+      body: n ? `字幕が ${n} 個あります。` : 'まだ字幕がありません。',
+      buttons: [
+        { label: '再生位置に字幕を足す', value: 'add', primary: true },
+        { label: 'SRT を読み込む', value: 'import' },
+        { label: 'SRT を書き出す', value: 'export' },
+        { label: '字幕全体の見た目', value: 'style' },
+        { label: '閉じる', value: null },
+      ],
+    });
+    if (v === 'add') {
+      let c = null;
+      if (edit('字幕を足す', () => { c = Proj.insertSubtitle(P, Engine.position(), '字幕'); })) {
+        Timeline.select([c.id], c.id);
+        $('#inspector').classList.add('open');
+        setTimeout(() => { const ta = $('#inspector .insp-textarea'); if (ta) { ta.focus(); ta.select(); } }, 50);
+      }
+    } else if (v === 'import') $('#srtInput').click();
+    else if (v === 'export') exportSrt();
+    else if (v === 'style') subtitleStyleDialog();
+  }
+
+  async function importSrt(file) {
+    let text;
+    try {
+      const buf = await file.arrayBuffer();
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    } catch {
+      try { text = new TextDecoder('shift_jis').decode(await file.arrayBuffer()); } catch { text = ''; }
+    }
+    const cues = Srt.parse(text);
+    if (!cues.length) { toast('字幕が見つかりませんでした（SRT の形か確かめてください）'); return; }
+    let r = null;
+    edit('SRT の読み込み', () => { r = Proj.addCues(P, cues); });
+    if (r) toast(`${r.count} 個の字幕を ${r.track.name} に並べました`);
+  }
+
+  function exportSrt() {
+    const text = Srt.fromProject(P);
+    if (!text) { toast('字幕がありません'); return; }
+    const file = new File(['﻿' + text], (P.name || '字幕').replace(/[\\/:*?"<>|]/g, '_') + '.srt', { type: 'application/x-subrip' });
+    const url = URL.createObjectURL(file);
+    const buttons = [];
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      buttons.push({ label: '共有・保存', primary: true, value: () => { navigator.share({ files: [file] }).catch(() => {}); return null; } });
+    }
+    buttons.push({ label: 'ダウンロード', value: () => { const a = h('a', { href: url, download: file.name }); document.body.append(a); a.click(); a.remove(); return null; } });
+    buttons.push({ label: '閉じる', value: null });
+    showDialog({ title: 'SRT を書き出す', body: `${file.name}（字幕 ${Proj.subtitleClips(P).length} 個）`, buttons }).then(() => setTimeout(() => URL.revokeObjectURL(url), 60000));
+  }
+
+  async function subtitleStyleDialog() {
+    const s = { ...Telop.defaultSubtitleStyle(), ...(P.subtitle_style || {}) };
+    const fonts = Telop.FONT_CHOICES.slice();
+    if (!fonts.some(([f]) => f === s.font)) fonts.unshift([s.font, s.font]);
+    const font = h('select', null, ...fonts.map(([v, t]) => h('option', { value: v, selected: v === s.font }, t)));
+    const size = h('input', { type: 'number', min: 16, max: 200, value: s.size });
+    const color = h('input', { type: 'color', value: (s.color || '#ffffff').slice(0, 7) });
+    const outline = h('input', { type: 'number', min: 0, max: 30, value: s.outline || 0 });
+    const ocolor = h('input', { type: 'color', value: (s.outline_color || '#000000').slice(0, 7) });
+    const box = h('input', { type: 'checkbox', checked: !!s.box });
+    const bcolor = h('input', { type: 'color', value: (s.box_color || '#000000a0').slice(0, 7) });
+    const align = h('select', null, ...[['bottom', '下'], ['top', '上'], ['middle', '中央']].map(([v, t]) => h('option', { value: v, selected: v === s.align }, t)));
+    const margin = h('input', { type: 'number', min: 0, max: 500, value: s.margin ?? 60 });
+    const body = h('div', { class: 'form two' },
+      h('label', null, '書体', font), h('label', null, '大きさ（1080p で px）', size),
+      h('label', null, '文字の色', color), h('label', null, '縁の太さ', outline), h('label', null, '縁の色', ocolor),
+      h('label', { class: 'inline' }, box, '帯を付ける'), h('label', null, '帯の色', bcolor),
+      h('label', null, '位置', align), h('label', null, '端からの距離（px）', margin),
+      h('p', { class: 'hint wide' }, '話者ごとの吹き出しは、字幕クリップの「話者」に名前を入れると付きます。'));
+    const ok = await showDialog({ title: '字幕全体の見た目', body, buttons: [{ label: 'やめる', value: false }, { label: '決める', value: true, primary: true }] });
+    if (!ok) return;
+    const keepA = (old, v) => v + ((old || '').length === 9 ? old.slice(7) : '');
+    edit('字幕の見た目', () => {
+      P.subtitle_style = {
+        ...s, font: font.value, size: clamp(Number(size.value) || 54, 16, 200), color: color.value, outline: clamp(Number(outline.value) || 0, 0, 30),
+        outline_color: ocolor.value, box: box.checked, box_color: keepA(s.box_color, bcolor.value), align: align.value, margin: clamp(Number(margin.value) || 0, 0, 500),
+      };
+    });
+  }
+
+  function previewClip(c) {
+    Engine.pause();
+    seek(c.start);
+    Engine.play();
+  }
+
   // ---- タイムラインの操作 --------------------------------------------------------
   function split() {
     const fr = Math.round(Engine.position());
@@ -502,7 +602,13 @@ const App = (() => {
       const r = cv.getBoundingClientRect();
       return { x: (e.clientX - r.left) / r.width * P.width, y: (e.clientY - r.top) / r.height * P.height };
     };
-    const visual = (c) => c && Proj.track(P, c.track).kind === 'video' && Engine.visibleClips(Engine.position()).some((x) => x.id === c.id);
+    const visual = (c) => {
+      if (!c) return false;
+      const t = Proj.track(P, c.track);
+      const fr = Math.floor(Engine.position());
+      if (t.kind === 'subtitle') return !t.muted && c.enabled && c.text && c.start <= fr && fr < Proj.end(c);
+      return t.kind === 'video' && Engine.visibleClips(fr).some((x) => x.id === c.id);
+    };
     cv.addEventListener('pointerdown', (e) => {
       if (!P) return;
       try { cv.setPointerCapture(e.pointerId); } catch { /* 捕まえられなくても続ける */ }
@@ -665,6 +771,7 @@ const App = (() => {
     else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); remove(e.shiftKey); }
     else if (k === 's' || k === 'S') split();
     else if (k === 'm' || k === 'M') toggleMarker();
+    else if (k === 't' || k === 'T') addText();
     else if (k === '+' || k === '=') Timeline.zoom(1.5);
     else if (k === '-') Timeline.zoom(1 / 1.5);
     else if (k === '\\') Timeline.fitAll();
@@ -680,7 +787,9 @@ const App = (() => {
       seek: (f) => { Engine.pause(); seek(f); },
       trackMenu,
     });
-    Inspector.init($('#inspector'), { begin, live, end, edit, settings: settingsDialog });
+    Inspector.init($('#inspector'), { begin, live, end, edit, settings: settingsDialog, preview: previewClip, subtitleStyle: subtitleStyleDialog });
+    // カタログは先に読んでおく（テロップの描き方・モーションに要る）
+    Promise.all([Telop.load(), Motion.load()]).then(() => { if (P) { Engine.refresh(); Inspector.refresh(); } }).catch((e) => console.warn('カタログを読めません', e));
     Engine.on('tick', (fr) => {
       updateTc(fr);
       if (Engine.isPlaying()) Timeline.follow(fr); else Timeline.draw();
@@ -705,6 +814,9 @@ const App = (() => {
     on('#btnEnd', () => { Engine.pause(); seek(Proj.duration(P)); });
     on('#btnPrevF', () => step(-1));
     on('#btnNextF', () => step(1));
+    on('#btnText', addText);
+    on('#btnSubs', subtitleMenu);
+    $('#srtInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f && P) importSrt(f); });
     on('#btnSplit', split);
     on('#btnDelete', () => remove(false));
     on('#btnRipple', () => remove(true));

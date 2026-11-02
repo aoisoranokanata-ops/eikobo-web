@@ -79,7 +79,7 @@ const Engine = (() => {
     const out = [];
     for (const t of visualTracks()) {
       for (const c of Object.values(p.clips)) {
-        if (c.track === t.id && c.enabled && c.start <= fr && fr < Proj.end(c) && (c.media || c.fill)) out.push(c);
+        if (c.track === t.id && c.enabled && c.start <= fr && fr < Proj.end(c) && (c.media || c.fill || c.text)) out.push(c);
       }
     }
     return out;
@@ -406,13 +406,17 @@ const Engine = (() => {
    * frame fr の絵を target に描く。k = 出力の画素 / 作品の画素。
    * getSource(c) → {img, w, h, rot}（w・h は回転前、rot は素材の回転・時計回りの度）。書き出しは別の読み手を渡す。
    */
-  function drawFrame(target, k, fr, getSource = sourceOf) {
+  function drawFrame(target, k, fr, getSource = sourceOf, opts = {}) {
     target.setTransform(1, 0, 0, 1, 0, 0);
     target.fillStyle = '#000';
     target.fillRect(0, 0, target.canvas.width, target.canvas.height);
     for (const c of visibleClips(fr)) {
       const alpha = clamp(c.opacity, 0, 1) * fadeFactor(c, Math.floor(fr));
       if (alpha <= 0) continue;
+      if (c.text && !c.media) {
+        TelopDraw.drawText(target, p, c, Math.floor(fr), k, alpha);
+        continue;
+      }
       if (c.fill && !c.media) {
         target.setTransform(k, 0, 0, k, 0, 0);
         target.globalAlpha = alpha;
@@ -434,6 +438,7 @@ const Engine = (() => {
     }
     target.globalAlpha = 1;
     target.setTransform(1, 0, 0, 1, 0, 0);
+    if (opts.subtitles !== false) TelopDraw.drawSubtitles(target, p, fr, k, fadeFactor);
   }
 
   function draw() {
@@ -459,6 +464,7 @@ const Engine = (() => {
 
   /** クリップの置き場所（作品の画素）。大きさが分からなければ素材の情報から */
   function clipBox(c) {
+    if (c.text && !c.media) return TelopDraw.bounds(p, c);
     if (c.fill && !c.media) return { cx: p.width / 2, cy: p.height / 2, w: p.width, h: p.height, rot: 0 };
     const m = p.media[c.media];
     if (!m || !m.width) return null;

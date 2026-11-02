@@ -1,0 +1,17 @@
+{
+ "schema": 1,
+ "palettes": {
+  "white":  {"name": "白",   "color_tags": ["白"],   "fill": "#ffffff", "edge": "#161616", "outer": "#3a8dde", "accent": "#3a8dde", "band": "#000000b4", "deep": "#0b1e3a", "light": "#ffffff", "glow": "#7fc4ff", "grad": ["#ffffff", "#cfe3ff"], "grad3": ["#ffffff", "#dfe9f5", "#8fa6c2"]},
+  "yellow": {"name": "黄",   "color_tags": ["黄"],   "fill": "#ffe14a", "edge": "#1c1400", "outer": "#ffffff", "accent": "#ff6a00", "band": "#141414d0", "deep": "#3a2a00", "light": "#fffbd0", "glow": "#ffd23f", "grad": ["#fff6b0", "#ffb800"], "grad3": ["#fffbe0", "#ffd23f", "#b87800"]},
+  "red":    {"name": "赤",   "color_tags": ["赤"],   "fill": "#ff3b3b", "edge": "#ffffff", "outer": "#5c0000", "accent": "#ffd400", "band": "#5c0000d0", "deep": "#3b0000", "light": "#ffe0e0", "glow": "#ff4d4d", "grad": ["#ff9a9a", "#d90000"], "grad3": ["#ffd6d6", "#ff3b3b", "#7a0000"]},
+  "blue":   {"name": "青",   "color_tags": ["青"],   "fill": "#2f8cff", "edge": "#ffffff", "outer": "#0a1f44", "accent": "#00e0ff", "band": "#0a1f44d0", "deep": "#081833", "light": "#e0f0ff", "glow": "#39a6ff", "grad": ["#8fd0ff", "#1f5fe0"], "grad3": ["#e0f2ff", "#2f8cff", "#0a2d6e"]},
+  "green":  {"name": "緑",   "color_tags": ["緑"],   "fill": "#2fd47a", "edge": "#ffffff", "outer": "#0b3d20", "accent": "#ffe600", "band": "#0b3d20d0", "deep": "#062b16", "light": "#e0fff0", "glow": "#3dff9a", "grad": ["#a8f5c8", "#17a85a"], "grad3": ["#e6fff1", "#2fd47a", "#0b5a2e"]},
+  "pink":   {"name": "ピンク", "color_tags": ["ピンク"], "fill": "#ff6fb5", "edge": "#ffffff", "outer": "#6b1240", "accent": "#ffe0f0", "band": "#6b1240c8", "deep": "#4a0f2c", "light": "#ffe6f2", "glow": "#ff7ac8", "grad": ["#ffd0e8", "#ff4f9a"], "grad3": ["#fff0f7", "#ff6fb5", "#9c1a5c"]},
+  "purple": {"name": "紫",   "color_tags": ["紫"],   "fill": "#a774ff", "edge": "#ffffff", "outer": "#2a0d57", "accent": "#ff9cf0", "band": "#2a0d57d0", "deep": "#1f0a40", "light": "#f0e6ff", "glow": "#b07dff", "grad": ["#e2ceff", "#7a3cff"], "grad3": ["#f5eeff", "#a774ff", "#3d1580"]},
+  "orange": {"name": "橙",   "color_tags": ["橙"],   "fill": "#ff9a1f", "edge": "#ffffff", "outer": "#4a2200", "accent": "#ffe600", "band": "#4a2200d0", "deep": "#3d1d00", "light": "#fff0dc", "glow": "#ffa53d", "grad": ["#ffd59a", "#ff7a00"], "grad3": ["#fff3e0", "#ff9a1f", "#8a4200"]},
+  "black":  {"name": "黒",   "color_tags": ["黒"],   "fill": "#1b1b1d", "edge": "#ffffff", "outer": "#1b1b1d", "accent": "#ff3b3b", "band": "#ffffffd8", "deep": "#000000", "light": "#ffffff", "glow": "#ffffff", "grad": ["#55555c", "#000000"], "grad3": ["#8a8a92", "#2a2a2e", "#000000"]},
+  "cyan":   {"name": "水色", "color_tags": ["水色", "青"], "fill": "#5ce1ff", "edge": "#0a2a3a", "outer": "#ffffff", "accent": "#ffffff", "band": "#003040c8", "deep": "#002030", "light": "#e0fbff", "glow": "#5ce1ff", "grad": ["#e0fbff", "#22c4f0"], "grad3": ["#f0fdff", "#5ce1ff", "#0a6a88"]},
+  "gold":   {"name": "金",   "color_tags": ["金", "黄"], "fill": "#f2c94c", "edge": "#3a2600", "outer": "#fff3c4", "accent": "#fff3c4", "band": "#1a1200d8", "deep": "#2a1c00", "light": "#fff6cf", "glow": "#ffd86b", "grad": ["#fff1b8", "#c99a1a"], "grad3": ["#fff6cf", "#e6b422", "#8a6410"]},
+  "silver": {"name": "銀",   "color_tags": ["銀", "白"], "fill": "#d9dde3", "edge": "#22262c", "outer": "#ffffff", "accent": "#ffffff", "band": "#15181cd8", "deep": "#101317", "light": "#ffffff", "glow": "#e8f0ff", "grad": ["#ffffff", "#9aa3ad"], "grad3": ["#ffffff", "#b9c0c9", "#6c737d"]}
+ }
+}

@@ -43,6 +43,7 @@ const Proj = (() => {
     if (!p.fps_num) { p.fps_num = 30; p.fps_den = 1; }
     if (!p.sample_rate) p.sample_rate = 48000;
     if (p.master_db === undefined) p.master_db = 0;
+    if (!p.subtitle_style && typeof Telop !== 'undefined') p.subtitle_style = Telop.defaultSubtitleStyle();
     return p;
   }
 
@@ -168,10 +169,10 @@ const Proj = (() => {
 
   function addTrack(p, kind) {
     const same = tracksOf(p, kind);
-    const letter = kind === 'video' ? 'V' : 'A';
+    const letter = { video: 'V', audio: 'A', subtitle: 'S' }[kind];
     let n = same.length + 1;
     while (p.tracks.some((t) => t.name === letter + n)) n++;
-    const t = { ...TRACK_DEFAULTS, id: uid(kind === 'video' ? 'v' : 'a'), kind, name: letter + n };
+    const t = { ...TRACK_DEFAULTS, id: uid(letter.toLowerCase()), kind, name: letter + n };
     // 同じ種類の最後の後ろに入れる
     const lastIdx = p.tracks.lastIndexOf(same[same.length - 1]);
     p.tracks.splice(lastIdx >= 0 ? lastIdx + 1 : p.tracks.length, 0, t);
@@ -199,6 +200,48 @@ const Proj = (() => {
       out.push(addClip(p, { ...base, id: uid('c'), track: tid }, true));
     }
     return out;
+  }
+
+  /** テロップ（文字のクリップ）を frame に置く。映像トラックの一番上の空いている段（無ければ上に段を足す） */
+  function insertText(p, frame, text, style, seconds = 3) {
+    const a = Math.max(0, Math.round(frame)), dur = Math.max(1, Math.round(seconds * fps(p)));
+    const vids = tracksOf(p, 'video');
+    const top = vids[vids.length - 1];
+    const tid = top && !top.locked && isFree(p, top.id, a, a + dur) ? top.id : addTrack(p, 'video').id;
+    return addClip(p, { id: uid('c'), track: tid, start: a, duration: dur, media: null, text, style, name: '' }, false);
+  }
+
+  /** 字幕を frame に置く（字幕トラックの空いている段、無ければ足す） */
+  function insertSubtitle(p, frame, text, seconds = 2) {
+    const a = Math.max(0, Math.round(frame)), dur = Math.max(1, Math.round(seconds * fps(p)));
+    const tid = freeTrack(p, 'subtitle', a, a + dur);
+    return addClip(p, { id: uid('c'), track: tid, start: a, duration: dur, media: null, text, style: null, name: '' }, false);
+  }
+
+  /** SRT などの字幕 [{start, end（秒）, text}] を新しい字幕トラックに並べる。重なる時は前の字幕を詰める */
+  function addCues(p, cues) {
+    const t = addTrack(p, 'subtitle');
+    const f = fps(p);
+    let prev = null;
+    let n = 0;
+    for (const q of cues.slice().sort((x, y) => x.start - y.start)) {
+      const a = Math.max(0, Math.round(q.start * f));
+      const b = Math.max(a + 1, Math.round(q.end * f));
+      if (prev && end(prev) > a) {
+        if (a <= prev.start) continue;
+        prev.duration = a - prev.start;
+      }
+      prev = addClip(p, { id: uid('c'), track: t.id, start: a, duration: b - a, media: null, text: q.text, style: null, name: '' }, false);
+      n++;
+    }
+    return { track: t, count: n };
+  }
+
+  /** 字幕（時刻順、非表示のトラックも含む）。SRT の書き出し用（exe の subtitle_clips(include_muted=True)） */
+  function subtitleClips(p) {
+    const out = [];
+    for (const t of tracksOf(p, 'subtitle')) out.push(...clipsOn(p, t.id).filter((c) => c.enabled && c.text));
+    return out.sort((x, y) => x.start - y.start || end(x) - end(y));
   }
 
   function deleteClips(p, ids, ripple = false, followLinks = true) {
@@ -423,7 +466,7 @@ const Proj = (() => {
   }
 
   // ---- 履歴 ---------------------------------------------------------------------
-  const SNAP_KEYS = ['width', 'height', 'fps_num', 'fps_den', 'media', 'tracks', 'clips', 'markers', 'in_point', 'out_point', 'master_db'];
+  const SNAP_KEYS = ['width', 'height', 'fps_num', 'fps_den', 'media', 'tracks', 'clips', 'markers', 'in_point', 'out_point', 'master_db', 'subtitle_style'];
   const snapshot = (p) => JSON.stringify(SNAP_KEYS.map((k) => p[k]));
   function restore(p, s) {
     const v = JSON.parse(s);
@@ -443,6 +486,7 @@ const Proj = (() => {
   return {
     SCHEMA, CLIP_DEFAULTS, create, normalize, fps, end, track, tracksOf, clipsOn, duration, linked, srcAt, withLinks, limited,
     mergeRanges, subtractRanges, removedBefore, clearRange, addClip, isFree, freeTrack, addTrack, mediaFrames, insertMedia,
+    insertText, insertSubtitle, addCues, subtitleClips,
     deleteClips, emptyRanges, rippleDeleteRanges, splitAt, trimLimits, trim, moveClips, unlink, setSpeed, setFps,
     checkOverlaps, snapshot, restore, History,
   };

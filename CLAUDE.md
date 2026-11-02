@@ -27,6 +27,12 @@
 | js/mux.js | MP4 / MOV を組み立てる（moov を前に。H.264＋AAC、AAC が無ければ MOV＋16bit PCM） |
 | js/exporter.js | 書き出しの画面と本体（音声は OfflineAudioContext → AudioEncoder、映像は 1 コマずつ → VideoEncoder） |
 | js/stream-worker.js | 書き出しの中身を OPFS（eikobo-web/export/）へ流す Worker |
+| js/telop.js | テロップのスタイル・カタログ（assets/telop_styles を展開して 100 種）、字幕の既定、話者の吹き出しの既定、書体の置き換え |
+| js/textrender.js | 文字を描く（帯 → 影 → 光彩 → 縁 → 塗り、1 行・1 文字ごとの層の絵、吹き出し）。exe の subrender.py の移植 |
+| js/motion.js | モーション 71 種（assets/telop_motions）。exe の motion.py の移植（計算は完全に同じ） |
+| js/telopdraw.js | テロップ・字幕を画面に置く（基準の位置・モーションの重ね方は exe の render.py と同じ） |
+| js/srt.js | SRT の読み書き |
+| js/stylepicker.js | スタイルのカタログの画面（見本・種類・色・検索・お気に入り） |
 | js/timeline.js | タイムライン（canvas、指・Pencil・マウス） |
 | js/inspector.js | 調整パネル |
 | js/app.js | 作品一覧・編集画面のつなぎ・素材の一覧・キーボード・自動保存 |
@@ -59,6 +65,21 @@
 - 速さ（この PC の Chrome）: 1080p で実時間の約 2 倍（2:25 の MV が 77 秒）。I420 の換算と getImageData が半分くらい。
 - 確かめる道具: `tools/sync_check.py`（光と音のずれ、試験素材は sync.mp4）、`tools/frame_map.py`（書き出しの各コマが元のどのコマか）。
 
+### テロップ・字幕（フェーズ3）の要点
+- データは exe と同じ: テロップ = 映像トラックの media 無し・text ありのクリップ（style・motion）、字幕 = kind 'subtitle' の
+  トラックのクリップ、作品の subtitle_style（speakers に話者ごとの吹き出し）。style のフォント名は exe の名前のまま持ち、
+  描く時だけ Telop.cssFamily で iPad の書体（ヒラギノ角ゴ・明朝・丸ゴ）に置き換える。
+- カタログの JSON は exe の assets をそのまま写したもの（両方とも自作）。exe 側を直したら写し直す。
+- 描き方: 縁は strokeText（線の太さ = 縁 × 2、角は丸）＋ fillText。ぼかし（影・光彩）は **ctx.filter が iPad で使えないので
+  shadowBlur（= σ × 2）で、形を画面の外に描いて影だけを戻す**。光彩の強さ（1.6 など）は同じ影を重ねる回数で近似。
+  古い style（outline / shadow: true）は TextRender.richen で同じ見た目の形に直して描く。
+  exe と同じ文字・同じスタイルで、絵の大きさが 12 種すべて画素単位で一致（tools/telop_compare.py で並べて確認）。
+- モーションの計算は `node tools/test_motion.cjs`（`python tools/motion_expect.py` で exe の値を作る）で 3084 か所が一致。
+  単位ごとの乱数は zlib.crc32 と同じ CRC32。1 文字ずつのモーション中のぼかしは「縮めて広げる」近似、拭き取りは
+  destination-in のグラデーション（exe と同じ柔らかさ）。
+- 1 文字ずつ動かす時は「層ごとに全部の文字を描く」（exe と同じ。文字ごとに全部の層だと隣の縁が塗りに被る）。
+- 描く速さ（この PC）: 1 文字ずつのモーション中の 1080p の 1 コマが約 3ms。文字の絵はキャッシュ（80 個）。
+
 ## 確かめ方
 - 開発サーバー: `.claude/launch.json` の `eikobo-web`（`python eikobo-web/tools/devserver.py 8678`）。no-store、`PUT /tools/fixtures/<名前>` で
   ブラウザから PNG などを書き出せる（画面が撮れない時はこれで canvas を見る）。
@@ -76,7 +97,8 @@
 2. **書き出し（v0.2.0、2026-10-30）**: MP4（H.264＋AAC、moov が前）。範囲（全体・選んだクリップ）・大きさ・画質、
    やめる、画面を消さない（Wake Lock）、共有シートで写真へ／ダウンロード。AAC が無い端末は MOV＋16bit PCM。
    PC の Chrome で: コマの位置は元と全コマ一致、音と映像のずれ 0ms、MV（H.264＋24bit lpcm の MOV）も一致。iPad 実機は未確認。
-3. テロップ・字幕（v0.3.0）: テキストクリップ、exe のスタイルカタログ・モーションの移植、字幕トラック、SRT の読み書き、吹き出し。
+3. **テロップ・字幕（v0.3.0、2026-11-02）**: テキストクリップ（スタイル 100 種・書体・色・縁・帯・基準の位置）、モーション 71 種
+   （登場・強調・退場、1 行・1 文字ずつ）、字幕トラック、SRT の読み書き、話者の吹き出し、字幕全体の見た目、書き出しで焼き込むか選ぶ。
 4. 色・トランジション・キーフレーム（v0.4.0）: WebGL の合成、色調補正・LUT、ディゾルブ・ワイプ、キーフレーム、切り抜き、カラーマット。
 5. 音声（v0.5.0）: ミキサー（メーター）、音量の線、EQ・コンプ、LUFS 正規化、BGM の自動ダッキング、ナレーション録音。
 6. exe との往復・仕上げ（v1.0.0）: .ekp の読み書き（素材はファイル名で結び付け）、作品のバックアップ、重い素材の扱い（プロキシ）。

@@ -72,6 +72,8 @@ const Exporter = (() => {
     for (const l of [3840, 1920, 1280]) if (l < long) { const [w, hh] = outSize(P, l); sizes.push([String(l), `${w} × ${hh}`]); }
     const size = h('select', null, ...sizes.map(([v, t]) => h('option', { value: v }, t)));
     const quality = h('select', null, ...Object.entries(QUALITY).map(([k, [t]]) => h('option', { value: k, selected: k === 'std' }, t)));
+    const hasSubs = Proj.subtitleClips(P).length > 0;
+    const subs = h('input', { type: 'checkbox', checked: true });
     const est = h('p', { class: 'hint' });
     const update = () => {
       const [w, hh] = outSize(P, size.value);
@@ -86,13 +88,14 @@ const Exporter = (() => {
       h('label', null, '範囲', range),
       h('label', null, '大きさ', size),
       h('label', null, '画質', quality),
+      hasSubs ? h('label', { class: 'inline' }, subs, '字幕を動画に入れる（焼き込み）') : null,
       est,
       h('p', { class: 'hint' }, '書き出し中は画面を開いたままにしてください（他のアプリに切り替えると止まります）。'));
     const ok = await showDialog({ title: '書き出し（MP4）', body, buttons: [{ label: 'やめる', value: false }, { label: '書き出す', value: true, primary: true }] });
     if (!ok) return;
     const r = range.value === 'sel' ? selRange : [0, total];
     const [w, hh] = outSize(P, size.value);
-    await run(P, { a: r[0], b: r[1], width: w, height: hh, bitrate: bitrateFor(quality.value, w, hh, fps) });
+    await run(P, { a: r[0], b: r[1], width: w, height: hh, bitrate: bitrateFor(quality.value, w, hh, fps), subtitles: !hasSubs || subs.checked });
   }
 
   // ---- 音声を混ぜる ---------------------------------------------------------------
@@ -251,6 +254,7 @@ const Exporter = (() => {
     try {
       if (lastUrl) { URL.revokeObjectURL(lastUrl); lastUrl = null; }
       await Store.removeExport();
+      await Promise.all([Telop.load(), Motion.load()]);
       const vcfg = await videoConfig(o.width, o.height, fps, o.bitrate);
       if (!vcfg) throw new Error(`この端末では ${o.width}×${o.height} の H.264 に書き出せません。大きさを下げてみてください。`);
 
@@ -348,7 +352,7 @@ const Exporter = (() => {
           if (!m) return null;
           if (m.kind === 'image') { const b = images.get(c.media); return b ? { img: b, w: b.width, h: b.height, rot: 0 } : null; }
           return frames.get(c.id) || null;
-        });
+        }, { subtitles: o.subtitles !== false });
         toI420(g.getImageData(0, 0, o.width, o.height).data, o.width, o.height, yuv);
         const vf = new VideoFrame(yuv, { format: 'I420', codedWidth: o.width, codedHeight: o.height, timestamp: Math.round(i * frameUs), duration: Math.round(frameUs), colorSpace: BT709 });
         encoder.encode(vf, { keyFrame: i % keyInt === 0 });

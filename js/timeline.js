@@ -6,7 +6,7 @@
    ドラッグ中は作品を書き換えず、離した時に 1 回だけ編集する（移動先は上書きなので、途中で書き換えると下のクリップが削れていく）。
    ------------------------------------------------------------ */
 const Timeline = (() => {
-  const HEAD_W = 84, RULER_H = 30, VROW = 60, AROW = 48, GAP = 2;
+  const HEAD_W = 84, RULER_H = 30, VROW = 60, AROW = 48, SROW = 40, GAP = 2;
   let p = null;
   let cv = null, g = null, box = null;
   let W = 0, H = 0, dpr = 1;
@@ -63,14 +63,15 @@ const Timeline = (() => {
   const xOf = (f) => HEAD_W + (f - scrollX) * ppf;
   const frameAt = (x) => scrollX + (x - HEAD_W) / ppf;
 
-  /** 段の並び: 映像は上の段ほど番号が大きい（V2 が V1 の上）、その下に音声 A1, A2 … */
+  /** 段の並び: 一番上に字幕（S2 が S1 の上）、映像は上の段ほど番号が大きい（V2 が V1 の上）、その下に音声 A1, A2 … */
   function rows() {
+    const subs = p.tracks.filter((t) => t.kind === 'subtitle').reverse();
     const vids = p.tracks.filter((t) => t.kind === 'video').reverse();
     const auds = p.tracks.filter((t) => t.kind === 'audio');
     const out = [];
     let y = RULER_H - scrollY;
-    for (const t of vids.concat(auds)) {
-      const h = t.kind === 'video' ? VROW : AROW;
+    for (const t of subs.concat(vids, auds)) {
+      const h = t.kind === 'video' ? VROW : t.kind === 'subtitle' ? SROW : AROW;
       out.push({ t, y, h });
       y += h + GAP;
     }
@@ -420,14 +421,14 @@ const Timeline = (() => {
     const t = r.t;
     const y = r.y + r.h - 24;
     const btn = (key, label, x, on) => ({ key, label, x, y, w: 22, h: 20, on });
-    if (t.kind === 'video') return [btn('mute', '目', 6, !t.muted), btn('lock', '鍵', 30, t.locked)];
+    if (t.kind === 'video' || t.kind === 'subtitle') return [btn('mute', '目', t.kind === 'subtitle' ? 34 : 6, !t.muted), btn('lock', '鍵', t.kind === 'subtitle' ? 58 : 30, t.locked)];
     return [btn('mute', 'M', 6, t.muted), btn('solo', 'S', 30, t.solo), btn('lock', '鍵', 54, t.locked)];
   }
 
   function headTap(r, x, y) {
     for (const b of headButtons(r)) {
       if (x >= b.x - 3 && x <= b.x + b.w + 3 && y >= b.y - 6 && y <= b.y + b.h + 4) {
-        hooks.edit(b.key === 'mute' ? (r.t.kind === 'video' ? '表示の切り替え' : 'ミュート') : b.key === 'solo' ? 'ソロ' : 'ロック', () => {
+        hooks.edit(b.key === 'mute' ? (r.t.kind === 'audio' ? 'ミュート' : '表示の切り替え') : b.key === 'solo' ? 'ソロ' : 'ロック', () => {
           const t = Proj.track(p, r.t.id);
           if (b.key === 'mute') t.muted = !t.muted;
           else if (b.key === 'solo') t.solo = !t.solo;
@@ -467,10 +468,13 @@ const Timeline = (() => {
 
   const COLORS = {
     video: ['#2f5f9e', '#3d74bd'], image: ['#6a4f9c', '#7f62b8'], audio: ['#2d7a55', '#379067'], fill: ['#7a6a3a', '#93804a'],
+    text: ['#a3562a', '#bf6a37'], sub: ['#25707a', '#2f8794'],
   };
 
   function clipKind(c) {
-    if (!c.media) return c.fill ? 'fill' : 'video';
+    const tk = Proj.track(p, c.track).kind;
+    if (tk === 'subtitle') return 'sub';
+    if (!c.media) return c.text ? 'text' : c.fill ? 'fill' : 'video';
     const m = p.media[c.media];
     if (!m) return 'video';
     if (Proj.track(p, c.track).kind === 'audio') return 'audio';
@@ -538,13 +542,20 @@ const Timeline = (() => {
     if (!c.enabled) g.globalAlpha *= 0.4;
     if (kind === 'audio') drawWave(c, x0, x1, y, h, cx0, cx1);
     else if (c.media) drawThumbs(c, x0, x1, y, h, cx0, cx1);
+    else if (c.text && h > 30) {
+      // 文字のクリップは中身を大きめに
+      g.fillStyle = 'rgba(255,255,255,0.92)';
+      g.font = `bold ${kind === 'sub' ? 12 : 15}px -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif`;
+      g.textBaseline = 'middle';
+      g.fillText(c.text.replace(/\n/g, ' '), Math.max(x0, HEAD_W) + 6, y + 16 + (h - 16) / 2);
+    }
     // 名前の帯
     g.fillStyle = 'rgba(0,0,0,0.35)';
     g.fillRect(x0, y, x1 - x0, 15);
     g.fillStyle = '#fff';
     g.font = '11px -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif';
     g.textBaseline = 'middle';
-    const label = c.name || (p.media[c.media] && p.media[c.media].name) || '';
+    const label = c.name || (c.text ? (kind === 'sub' ? '字幕' : 'テキスト') + (c.motion ? ' ★' : '') + ((c.style || {}).speaker ? '・' + c.style.speaker : '') : '') || (p.media[c.media] && p.media[c.media].name) || '';
     g.fillText(label + (c.speed !== 1 ? `（${c.speed}倍）` : ''), Math.max(x0, HEAD_W) + 5, y + 8);
     // フェードの斜線
     g.strokeStyle = 'rgba(255,255,255,0.7)';
@@ -575,7 +586,7 @@ const Timeline = (() => {
     const f0 = Math.floor(frameAt(HEAD_W)), f1 = Math.ceil(frameAt(W));
     // 段
     for (const r of R) {
-      g.fillStyle = r.t.kind === 'video' ? '#1d2026' : '#1b2220';
+      g.fillStyle = r.t.kind === 'video' ? '#1d2026' : r.t.kind === 'subtitle' ? '#1b2124' : '#1b2220';
       g.fillRect(HEAD_W, r.y, W - HEAD_W, r.h);
     }
     // 目盛りの縦線
@@ -663,12 +674,12 @@ const Timeline = (() => {
     g.fillRect(0, 0, HEAD_W, H);
     for (const r of R) {
       if (r.y + r.h < RULER_H) continue;
-      g.fillStyle = r.t.kind === 'video' ? '#262a32' : '#25302b';
+      g.fillStyle = r.t.kind === 'video' ? '#262a32' : r.t.kind === 'subtitle' ? '#23302f' : '#25302b';
       g.fillRect(0, r.y, HEAD_W - 1, r.h);
       g.fillStyle = '#dde';
       g.font = 'bold 12px -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif';
       g.textBaseline = 'top';
-      g.fillText(r.t.name, 8, r.y + 6);
+      g.fillText(r.t.name, 8, r.t.kind === 'subtitle' ? r.y + r.h / 2 - 7 : r.y + 6);
       g.font = '11px -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif';
       g.textBaseline = 'middle';
       for (const b of headButtons(r)) {

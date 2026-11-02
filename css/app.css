@@ -132,6 +132,26 @@ input[type=text], input[type=number], select {
 input[type=range] { width: 100%; accent-color: var(--accent); }
 input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 
+/* テロップ・字幕 */
+button.accent { background: #5a3a22; border-color: #bf6a37; }
+.insp-textarea { width: 100%; min-height: 64px; resize: vertical; background: #14161a; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 15px; -webkit-user-select: text; user-select: text; }
+.insp-stylename { font-size: 13px; font-weight: 700; padding: 2px 0 4px; }
+.insp-row.motion { grid-template-columns: 52px 1fr 74px; }
+.insp-row input[type=color] { width: 56px; height: 32px; padding: 0 2px; background: #14161a; border: 1px solid var(--line); border-radius: 6px; }
+.picker-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.picker-filters select, .picker-filters input[type=search] { width: auto; flex: 1 1 140px; background: #14161a; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-height: 34px; }
+.pick-fav { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+.style-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; max-height: 60vh; overflow: auto; -webkit-overflow-scrolling: touch; }
+.style-tile { position: relative; background: repeating-conic-gradient(#3a3f48 0% 25%, #2a2e36 0% 50%) 0 0 / 16px 16px; border: 2px solid transparent; border-radius: 8px; cursor: pointer; overflow: hidden; }
+.style-tile.current { border-color: var(--sel); }
+.style-tile canvas { display: block; width: 100%; aspect-ratio: 196 / 92; }
+.style-name { font-size: 11px; background: rgba(0,0,0,0.6); padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.style-tile .star { position: absolute; right: 2px; top: 2px; min-height: 26px; width: 28px; padding: 0; background: rgba(0,0,0,0.45); border: none; color: #888; font-size: 15px; }
+.style-tile .star.on { color: var(--sel); }
+.form.two { grid-template-columns: 1fr 1fr; }
+.form .wide { grid-column: 1 / -1; }
+.form label.inline, label.inline { display: flex; align-items: center; gap: 8px; }
+
 /* ---- 狭い画面（縦向き）: 素材・調整は引き出しに ---- */
 .only-narrow { display: none; }
 @media (max-width: 1060px), (orientation: portrait) {

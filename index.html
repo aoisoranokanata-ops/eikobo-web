@@ -66,6 +66,8 @@
   <div id="divider" title="ドラッグでタイムラインの高さを変える"><span></span></div>
 
   <div class="tools">
+    <button id="btnText" class="accent">＋ テキスト</button>
+    <button id="btnSubs" class="accent">字幕</button>
     <button id="btnSplit">分割</button>
     <button id="btnDelete">削除</button>
     <button id="btnRipple">詰めて削除</button>
@@ -84,8 +86,14 @@
 </div>
 
 <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*,.mov,.mp4,.m4a,.mp3,.wav,.aac,.caf,.heic" hidden>
+<input type="file" id="srtInput" accept=".srt,.txt,text/plain,application/x-subrip" hidden>
 
 <script src="js/util.js"></script>
+<script src="js/telop.js"></script>
+<script src="js/textrender.js"></script>
+<script src="js/motion.js"></script>
+<script src="js/telopdraw.js"></script>
+<script src="js/srt.js"></script>
 <script src="js/store.js"></script>
 <script src="js/mp4.js"></script>
 <script src="js/media.js"></script>
@@ -95,6 +103,7 @@
 <script src="js/mux.js"></script>
 <script src="js/exporter.js"></script>
 <script src="js/timeline.js"></script>
+<script src="js/stylepicker.js"></script>
 <script src="js/inspector.js"></script>
 <script src="js/app.js"></script>
 </body>
