@@ -366,6 +366,7 @@ const Inspector = (() => {
         slider('音量', { min: -40, max: 12, step: 0.5, get: () => c.volume_db, set: (v) => { c.volume_db = v; }, unit: 'dB', kf: { c, prop: 'volume_db', fromV: (v) => Math.round(v * 2) / 2 } }),
       ));
       root.append(renderKeys(c));
+      root.append(...renderAudioFx(c));
     }
     root.append(renderTransition(c));
     root.append(section('フェード・速さ',
@@ -378,6 +379,54 @@ const Inspector = (() => {
         : null,
     ));
     if (c.link) root.append(h('button', { class: 'block', onclick: () => hooks.edit('リンク解除', () => Proj.unlink(p, [c.id])) }, '映像と音声のリンクを外す'));
+  }
+
+  /** 音声クリップのエフェクト（EQ・コンプ・ノイズ除去）と音量をそろえる */
+  function renderAudioFx(c) {
+    const afx = c.afx || {};
+    const setFx = (k, v) => {
+      const n = { ...(c.afx || {}) };
+      if (v === null || v === undefined || v === 0) delete n[k]; else n[k] = v;
+      c.afx = Object.keys(n).length ? n : null;
+    };
+    const presetSel = (label, presets, cur, apply) => {
+      const match = Object.entries(presets).find(([, v]) => cur && JSON.stringify(v) === JSON.stringify(cur));
+      const opts = [['', cur ? (match ? match[0] : '自分で決めた値') : 'なし']].concat(Object.keys(presets).map((k) => [k, k]));
+      if (cur) opts.push(['-', '外す']);
+      return selectRow(label, opts, match ? match[0] : '', (v) => { if (v) hooks.edit(label, () => apply(v === '-' ? null : { ...presets[v] })); });
+    };
+    const eq = afx.eq;
+    const eqRows = [presetSel('かんたん', AudioFx.EQ_PRESETS, eq, (v) => setFx('eq', v))];
+    if (eq) {
+      const setEq = (k, v) => setFx('eq', { ...(c.afx.eq || {}), [k]: v });
+      eqRows.push(
+        slider('低音を切る', { min: 0, max: 400, step: 10, get: () => Number(eq.low_cut || 0), set: (v) => setEq('low_cut', v), unit: 'Hz' }),
+        slider('低音', { min: -12, max: 12, step: 0.5, get: () => Number(eq.low_gain || 0), set: (v) => setEq('low_gain', v), unit: 'dB' }),
+        slider('中音（声）', { min: -12, max: 12, step: 0.5, get: () => Number(eq.mid_gain || 0), set: (v) => setEq('mid_gain', v), unit: 'dB' }),
+        slider('高音', { min: -18, max: 12, step: 0.5, get: () => Number(eq.high_gain || 0), set: (v) => setEq('high_gain', v), unit: 'dB' }));
+    }
+    const comp = afx.comp;
+    const compRows = [presetSel('かんたん', AudioFx.COMP_PRESETS, comp, (v) => setFx('comp', v))];
+    if (comp) {
+      const setC = (k, v) => setFx('comp', { ...(c.afx.comp || {}), [k]: v });
+      compRows.push(
+        slider('しきい値', { min: -60, max: 0, step: 1, get: () => Number(comp.threshold ?? -24), set: (v) => setC('threshold', v), unit: 'dB' }),
+        slider('比率', { min: 1, max: 10, step: 0.5, get: () => Number(comp.ratio ?? 3), set: (v) => setC('ratio', v), unit: ': 1' }),
+        slider('持ち上げ', { min: 0, max: 18, step: 0.5, get: () => Number(comp.makeup ?? 0), set: (v) => setC('makeup', v), unit: 'dB' }));
+    }
+    const dn = Number(afx.denoise || 0);
+    const dnSel = selectRow('強さ', [['0', 'なし'], ['0.5', '弱い'], ['0.8', 'ふつう'], ['0.95', '強い']].concat([0, 0.5, 0.8, 0.95].includes(dn) ? [] : [[String(dn), String(dn)]]), String(dn),
+      (v) => { hooks.edit('ノイズ除去', () => setFx('denoise', Number(v) || null)); if (Number(v)) hooks.prepareFx(c); });
+    const target = h('select', null, ...AudioFx.LOUDNESS_TARGETS.map(([t, v]) => h('option', { value: v, selected: v === -16 }, t)));
+    return [
+      section('声・音の調整（EQ）', ...eqRows),
+      section('コンプレッサー（音量の差を縮める）', ...compRows),
+      section('ノイズ除去（エアコン・ファンなどの一定の雑音）', dnSel, dn ? h('p', { class: 'insp-hint' }, '処理は最初の再生・書き出しの前に一度だけ行います（長い素材は少し時間がかかります）。') : null),
+      section('音量をそろえる（ラウドネス）',
+        h('label', { class: 'insp-row' }, h('span', { class: 'insp-label' }, '目標'), target),
+        h('button', { class: 'block', onclick: () => hooks.normalize(Number(target.value)) }, '選んだ音声クリップを目標に合わせる'),
+        h('p', { class: 'insp-hint' }, '同じ素材のクリップはまとめて測り、同じだけ動かします（細切れにした声の音量がそろったまま）。')),
+    ];
   }
 
   /** 再生位置が動いた時（キーフレームのある値を出し直す） */

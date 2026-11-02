@@ -46,6 +46,7 @@
     </aside>
     <section id="viewer">
       <div id="previewBox"><canvas id="preview"></canvas></div>
+      <div id="mixer" class="mixer" hidden></div>
     </section>
     <aside id="inspector" class="panel drawer-right"></aside>
   </div>
@@ -60,6 +61,8 @@
     <button id="btnNextF" class="icon" aria-label="1 コマ進む"><svg viewBox="0 0 24 24"><path d="M9 6l7 6-7 6z"/></svg></button>
     <button id="btnEnd" class="icon" aria-label="末尾へ"><svg viewBox="0 0 24 24"><path d="M5 5v14l10-7z"/><rect x="16.5" y="5" width="2.5" height="14" rx="1"/></svg></button>
     <div class="spacer"></div>
+    <button id="btnRec" class="rec">● 録音</button>
+    <button id="btnMixer">ミキサー</button>
     <button id="btnInspector" class="only-narrow">調整</button>
   </div>
 
@@ -92,6 +95,7 @@
 
 <script src="js/util.js"></script>
 <script src="js/keyframes.js"></script>
+<script src="js/audiofx.js"></script>
 <script src="js/grade.js"></script>
 <script src="js/telop.js"></script>
 <script src="js/textrender.js"></script>
@@ -109,6 +113,8 @@
 <script src="js/timeline.js"></script>
 <script src="js/stylepicker.js"></script>
 <script src="js/inspector.js"></script>
+<script src="js/mixer.js"></script>
+<script src="js/recorder.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

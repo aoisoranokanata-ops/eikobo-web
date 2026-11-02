@@ -43,6 +43,8 @@ const Proj = (() => {
     if (!p.fps_num) { p.fps_num = 30; p.fps_den = 1; }
     if (!p.sample_rate) p.sample_rate = 48000;
     if (p.master_db === undefined) p.master_db = 0;
+    if (!p.limiter) p.limiter = { on: true, ceiling: -1 };
+    if (p.ducking === undefined) p.ducking = null;
     if (!p.subtitle_style && typeof Telop !== 'undefined') p.subtitle_style = Telop.defaultSubtitleStyle();
     return p;
   }
@@ -512,7 +514,7 @@ const Proj = (() => {
   }
 
   // ---- 履歴 ---------------------------------------------------------------------
-  const SNAP_KEYS = ['width', 'height', 'fps_num', 'fps_den', 'media', 'tracks', 'clips', 'markers', 'in_point', 'out_point', 'master_db', 'subtitle_style'];
+  const SNAP_KEYS = ['width', 'height', 'fps_num', 'fps_den', 'media', 'tracks', 'clips', 'markers', 'in_point', 'out_point', 'master_db', 'subtitle_style', 'limiter', 'ducking'];
   const snapshot = (p) => JSON.stringify(SNAP_KEYS.map((k) => p[k]));
   function restore(p, s) {
     const v = JSON.parse(s);

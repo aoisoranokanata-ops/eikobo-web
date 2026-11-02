@@ -15,7 +15,7 @@ const Engine = (() => {
   let token = 0;                 // 再生をやり直すたびに増える（古い予約を捨てる）
   let raf = 0;
   let drawQueued = false;
-  let master = null;
+  let buses = null;               // 再生中の音の通り道（メーター用）
   const pool = new Map();        // クリップ ID → {v, media, pending}
   let nodes = [];
   const listeners = { tick: [], state: [] };
@@ -50,16 +50,6 @@ const Engine = (() => {
   const isPlaying = () => playing;
 
   function ctx() { return Media.audioContext(); }
-
-  function masterNode() {
-    const c = ctx();
-    if (!master || master.context !== c) {
-      master = c.createGain();
-      master.connect(c.destination);
-    }
-    master.gain.value = dbToGain(p ? p.master_db || 0 : 0);
-    return master;
-  }
 
   // 出力の遅れを引いた「今聞こえている」位置
   function clockFrame() {
@@ -220,10 +210,16 @@ const Engine = (() => {
    * 鳴らす音声クリップの一覧（exe の audio.py の _entries と同じ）。トランジションのある切れ目は前後をはみ出させて
    * 等パワーのクロスフェード: xIn = [前へはみ出すフレーム, 全長]、xOut = [後ろへはみ出すフレーム, 全長]。
    */
-  function audioEntries(pp) {
+  /**
+   * 鳴らす音声クリップの一覧（exe の audio.py の _entries と同じ）。トランジションのある切れ目は前後をはみ出させて
+   * 等パワーのクロスフェード: xIn = [前へはみ出すフレーム, 全長]、xOut = [後ろへはみ出すフレーム, 全長]。
+   * only を渡すとそのトラックだけ（ミュート・ソロは見ない。ダッキングの声用）。
+   */
+  function audioEntries(pp, only) {
     const solo = pp.tracks.some((t) => t.kind === 'audio' && t.solo);
+    const tracks = only ? pp.tracks.filter((t) => only.includes(t.id)) : pp.tracks.filter((x) => x.kind === 'audio' && !x.muted && (!solo || x.solo));
     const out = [];
-    for (const t of pp.tracks.filter((x) => x.kind === 'audio' && !x.muted && (!solo || x.solo))) {
+    for (const t of tracks) {
       const clips = Proj.clipsOn(pp, t.id).filter((c) => c.enabled && c.media);
       clips.forEach((c, i) => {
         const prev = clips[i - 1], nxt = clips[i + 1];
@@ -236,10 +232,10 @@ const Engine = (() => {
     return out;
   }
 
-  /** クリップ先頭から rel フレームでの音量の倍率（音量のキー・フェード・クロスフェード・トラックの音量） */
-  function audioGain(e, rel) {
+  /** クリップ先頭から rel フレームでの音量の倍率（音量のキー・フェード・クロスフェード）。withTrack ならトラックの音量も（ふだんは通り道で掛ける） */
+  function audioGain(e, rel, withTrack) {
     const c = e.c;
-    let g = dbToGain(Keys.volumeDbAt(c, rel) + (e.t.volume_db || 0));
+    let g = dbToGain(Keys.volumeDbAt(c, rel) + (withTrack ? e.t.volume_db || 0 : 0));
     if (c.fade_in > 0 && !e.xIn) g *= clamp(rel / c.fade_in, 0, 1);
     if (c.fade_out > 0 && !e.xOut) g *= clamp((c.duration - rel) / c.fade_out, 0, 1);
     if (e.xIn) { const [before, total] = e.xIn; g *= Math.sin(clamp((rel + before) / total, 0, 1) * Math.PI / 2); }
@@ -251,7 +247,7 @@ const Engine = (() => {
    * 1 つのクリップを鳴らす予約。from〜to はタイムラインのフレーム（はみ出し込みの範囲に収める）、T(フレーム) → 時計の秒。
    * 音量は 20ms ごとの値のカーブにして setValueCurveAtTime（キー・フェード・クロスフェードを全部まとめて）。
    */
-  function scheduleEntry(cx, dest, pp, e, au, from, to, T, keep) {
+  function scheduleEntry(cx, dest, pp, e, au, from, to, T, keep, withTrack = false) {
     const c = e.c, f = Proj.fps(pp);
     const cs = c.start - (e.xIn ? e.xIn[0] : 0), ce = Proj.end(c) + (e.xOut ? e.xOut[0] : 0);
     from = Math.max(from, cs);
@@ -271,59 +267,18 @@ const Engine = (() => {
     const curve = new Float32Array(n);
     let constant = true;
     for (let i = 0; i < n; i++) {
-      curve[i] = audioGain(e, from + (to - from) * i / (n - 1) - c.start);
+      curve[i] = audioGain(e, from + (to - from) * i / (n - 1) - c.start, withTrack);
       if (i && Math.abs(curve[i] - curve[0]) > 1e-6) constant = false;
     }
-    if (constant) gain.gain.value = curve[0];
-    else { gain.gain.value = curve[0]; gain.gain.setValueCurveAtTime(curve, T(from), Math.max(0.001, span)); }
-    let node = gain;
-    if (e.t.pan && cx.createStereoPanner) {
-      const pan = cx.createStereoPanner();
-      pan.pan.value = clamp(e.t.pan, -1, 1);
-      gain.connect(pan);
-      node = pan;
-      if (keep) keep.push(pan);
-    }
+    gain.gain.value = curve[0];
+    if (!constant) gain.gain.setValueCurveAtTime(curve, T(from), Math.max(0.001, span));
     src.connect(gain);
-    node.connect(dest);
+    gain.connect(dest);
     src.start(when, off, dur);
     if (keep) keep.push(src, gain);
   }
 
-  function scheduleAudio() {
-    const my = token;
-    const out = masterNode();
-    for (const e of audioEntries(p)) {
-      if (Proj.end(e.c) + (e.xOut ? e.xOut[0] : 0) <= startFrame) continue;
-      Media.audio(e.c.media).then((au) => {
-        if (!au || my !== token || !playing) return;
-        const cx = ctx();
-        // 読み込みが遅れて開始時刻を過ぎていたら、今の位置から
-        const nowFrame = startFrame + (cx.currentTime + 0.03 - startCtx) * F();
-        scheduleEntry(cx, out, p, e, au, Math.max(startFrame, nowFrame), Infinity, timeOf, nodes);
-      });
-    }
-  }
-
-  /** 書き出し用: a〜b フレームの音声を OfflineAudioContext で混ぜる（無ければ null） */
-  async function renderMix(pp, a, b, sr = 48000) {
-    const entries = [];
-    for (const e of audioEntries(pp)) {
-      const cs = e.c.start - (e.xIn ? e.xIn[0] : 0), ce = Proj.end(e.c) + (e.xOut ? e.xOut[0] : 0);
-      if (ce <= a || cs >= b) continue;
-      const au = await Media.audio(e.c.media);
-      if (au) entries.push([e, au]);
-    }
-    if (!entries.length) return null;
-    const f = Proj.fps(pp);
-    const oc = new OfflineAudioContext(2, Math.max(1, Math.round((b - a) / f * sr)), sr);
-    const m = oc.createGain();
-    m.gain.value = dbToGain(pp.master_db || 0);
-    m.connect(oc.destination);
-    for (const [e, au] of entries) scheduleEntry(oc, m, pp, e, au, a, b, (fr) => (fr - a) / f, null);
-    return oc.startRendering();
-  }
-
+  /** 映像のフェードの倍率（exe の render.fade_factor） */
   function fadeFactor(c, fr) {
     let f = 1;
     if (c.fade_in > 0) f = Math.min(f, (fr - c.start + 1) / (c.fade_in + 1));
@@ -331,11 +286,180 @@ const Engine = (() => {
     return clamp(f, 0, 1);
   }
 
+  /** 等パワーのパン（中央で左右とも 1.0、exe の pan_gains） */
+  function panGains(pan) {
+    const ang = (clamp(pan || 0, -1, 1) + 1) * Math.PI / 4;
+    return [Math.cos(ang) * Math.SQRT2, Math.sin(ang) * Math.SQRT2];
+  }
+
+  /**
+   * 音の通り道: トラックごとに 入口 → パン（左右の倍率）→ ダッキング → [メーター] → マスター（音量）→ [リミッター] → 出口。
+   * live = 再生中（メーターとリミッターの近似を付ける）。
+   */
+  function buildBuses(cx, dest, pp, live, keep) {
+    const out = { tracks: new Map(), master: null, meter: null };
+    const m = cx.createGain();
+    m.gain.value = dbToGain(pp.master_db || 0);
+    let tail = m;
+    const lim = pp.limiter || { on: true, ceiling: -1 };
+    if (live && lim.on !== false) {
+      // 再生中のリミッター（書き出しは exe と同じ計算を後から掛ける）
+      const dc = cx.createDynamicsCompressor();
+      dc.threshold.value = Number(lim.ceiling ?? -1); dc.knee.value = 0; dc.ratio.value = 20; dc.attack.value = 0.002; dc.release.value = 0.08;
+      m.connect(dc); tail = dc; keep.push(dc);
+    }
+    if (live) { const an = cx.createAnalyser(); an.fftSize = 1024; tail.connect(an); out.meter = an; keep.push(an); }
+    tail.connect(dest);
+    keep.push(m);
+    out.master = m;
+    for (const t of pp.tracks.filter((x) => x.kind === 'audio')) {
+      const input = cx.createGain();
+      input.channelCount = 2; input.channelCountMode = 'explicit'; input.channelInterpretation = 'speakers';
+      input.gain.value = dbToGain(t.volume_db || 0);
+      const split = cx.createChannelSplitter(2), merge = cx.createChannelMerger(2);
+      const [gl, gr] = panGains(t.pan);
+      const l = cx.createGain(), r = cx.createGain();
+      l.gain.value = gl; r.gain.value = gr;
+      input.connect(split); split.connect(l, 0); split.connect(r, 1); l.connect(merge, 0, 0); r.connect(merge, 0, 1);
+      const duck = cx.createGain();
+      merge.connect(duck);
+      let end = duck;
+      let meter = null;
+      if (live) { meter = cx.createAnalyser(); meter.fftSize = 1024; duck.connect(meter); }
+      end.connect(m);
+      keep.push(input, split, merge, l, r, duck);
+      if (meter) keep.push(meter);
+      out.tracks.set(t.id, { input, duck, meter, l, r });
+    }
+    return out;
+  }
+
+  /** 声のトラックだけを混ぜた 48k モノラル（ダッキングの元。ミュート・ソロ・パンは見ない） */
+  async function mixVoice(voice) {
+    const pp = p;
+    const entries = audioEntries(pp, voice);
+    const len = Math.max(1, Math.ceil(Proj.duration(pp) / Proj.fps(pp) * 48000) + 4800);
+    const oc = new OfflineAudioContext(1, len, 48000);
+    let any = false;
+    for (const e of entries) {
+      const au = await AudioFx.processed(e.c.media, e.c.afx);
+      if (!au) continue;
+      scheduleEntry(oc, oc.destination, pp, e, au, 0, Infinity, (fr) => fr / Proj.fps(pp), null, true);
+      any = true;
+    }
+    return any ? oc.startRendering() : null;
+  }
+
+  /** ダッキングの倍率を音楽のトラックへ（from〜to フレーム、T は時計） */
+  function applyDuck(env, d, bs, from, to, T) {
+    const f = Proj.fps(p);
+    const t0 = from / f, t1 = to / f;
+    const n = Math.max(2, Math.min(200000, Math.ceil((t1 - t0) * env.rate) + 1));
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) curve[i] = 10 ** (-AudioFx.duckDbAt(env, t0 + (t1 - t0) * i / (n - 1)) / 20);
+    for (const tid of d.music) {
+      const b = bs.tracks.get(tid);
+      if (!b) continue;
+      b.duck.gain.value = curve[0];
+      try { b.duck.gain.setValueCurveAtTime(curve, Math.max(T(from), 0), Math.max(0.01, T(to) - T(from))); } catch { /* 時刻が過ぎていた */ }
+    }
+  }
+
+  function scheduleAudio() {
+    const my = token;
+    const cx = ctx();
+    buses = buildBuses(cx, cx.destination, p, true, nodes);
+    const bs = buses;
+    for (const e of audioEntries(p)) {
+      if (Proj.end(e.c) + (e.xOut ? e.xOut[0] : 0) <= startFrame) continue;
+      AudioFx.processed(e.c.media, e.c.afx).then((au) => {
+        if (!au || my !== token || !playing) return;
+        // 読み込みが遅れて開始時刻を過ぎていたら、今の位置から
+        const nowFrame = startFrame + (cx.currentTime + 0.03 - startCtx) * F();
+        scheduleEntry(cx, bs.tracks.get(e.t.id).input, p, e, au, Math.max(startFrame, nowFrame), Infinity, timeOf, nodes);
+      });
+    }
+    const d = AudioFx.duckSettings(p);
+    if (d) {
+      AudioFx.duckEnvelope(p, mixVoice).then((env) => {
+        if (!env || my !== token || !playing) return;
+        const nowFrame = Math.max(startFrame, startFrame + (cx.currentTime + 0.03 - startCtx) * F());
+        applyDuck(env, d, bs, nowFrame, Proj.duration(p) + 1, timeOf);
+      });
+    }
+  }
+
+  /** ミキサーを動かしている間: 再生を止めずにトラックの音量・パン・マスター音量を変える */
+  function liveMix() {
+    if (!playing || !buses) return;
+    const now = ctx().currentTime;
+    for (const t of p.tracks.filter((x) => x.kind === 'audio')) {
+      const b = buses.tracks.get(t.id);
+      if (!b) continue;
+      b.input.gain.setTargetAtTime(dbToGain(t.volume_db || 0), now, 0.02);
+      const [gl, gr] = panGains(t.pan);
+      b.l.gain.setTargetAtTime(gl, now, 0.02);
+      b.r.gain.setTargetAtTime(gr, now, 0.02);
+    }
+    buses.master.gain.setTargetAtTime(dbToGain(p.master_db || 0), now, 0.02);
+  }
+
+  /** メーター: {トラック ID: ピーク（0〜1）, master: ピーク}。再生していなければ空 */
+  const meterBuf = new Float32Array(1024);
+  function meters() {
+    const out = {};
+    if (!playing || !buses) return out;
+    const peak = (an) => { an.getFloatTimeDomainData(meterBuf); let m = 0; for (const v of meterBuf) { const a = Math.abs(v); if (a > m) m = a; } return m; };
+    for (const [id, b] of buses.tracks) if (b.meter) out[id] = peak(b.meter);
+    if (buses.meter) out.master = peak(buses.meter);
+    return out;
+  }
+
+  /** 書き出し用: a〜b フレームの音声を OfflineAudioContext で混ぜる（無ければ null）。リミッターは exe と同じ計算 */
+  async function renderMix(pp, a, b, sr = 48000) {
+    const entries = [];
+    for (const e of audioEntries(pp)) {
+      const cs = e.c.start - (e.xIn ? e.xIn[0] : 0), ce = Proj.end(e.c) + (e.xOut ? e.xOut[0] : 0);
+      if (ce <= a || cs >= b) continue;
+      const au = await AudioFx.processed(e.c.media, e.c.afx);
+      if (au) entries.push([e, au]);
+    }
+    if (!entries.length) return null;
+    const f = Proj.fps(pp);
+    const oc = new OfflineAudioContext(2, Math.max(1, Math.round((b - a) / f * sr)), sr);
+    const T = (fr) => (fr - a) / f;
+    const bs = buildBuses(oc, oc.destination, pp, false, []);
+    for (const [e, au] of entries) scheduleEntry(oc, bs.tracks.get(e.t.id).input, pp, e, au, a, b, T, null);
+    const d = AudioFx.duckSettings(pp);
+    if (d) {
+      const env = await AudioFx.duckEnvelope(pp, mixVoice);
+      if (env) applyDuck(env, d, bs, a, b, T);
+    }
+    const out = await oc.startRendering();
+    const lim = pp.limiter || { on: true, ceiling: -1 };
+    if (lim.on !== false) {
+      const chans = [out.getChannelData(0), out.getChannelData(1)];
+      AudioFx.limit(chans, sr, Number(lim.ceiling ?? -1));
+    }
+    return out;
+  }
+
+  /** 作品全体（または範囲）のラウドネスとピーク（書き出しと同じ混ぜ方で） */
+  async function measureMix(pp, a = 0, b = Proj.duration(pp)) {
+    const buf = await renderMix(pp, a, b);
+    if (!buf) return null;
+    const m = AudioFx.measureBuffer(buf);
+    return { lufs: m.integrated(), peak: m.peakDb() };
+  }
+
   /** 音声を先に読んでおく（再生ボタンを押してから待たせないため） */
   function preloadAudio() {
     if (!p) return;
     const ids = new Set(Object.values(p.clips).filter((c) => c.media && p.media[c.media] && p.media[c.media].has_audio).map((c) => c.media));
     for (const id of ids) Media.audio(id);
+    // エフェクトの処理とダッキングの準備も先に（再生を押してから待たせない）
+    for (const c of Object.values(p.clips)) if (c.media && AudioFx.hasFx(c.afx) && Proj.track(p, c.track).kind === 'audio') AudioFx.processed(c.media, c.afx);
+    if (AudioFx.duckSettings(p)) AudioFx.duckEnvelope(p, mixVoice).catch(() => {});
   }
 
   // ---- 再生の操作 ----------------------------------------------------------------
@@ -646,5 +770,6 @@ const Engine = (() => {
   return {
     attach, setProject, setOverlay, on, play, pause, stop, toggle, seek, refresh, resize, requestDraw, position, isPlaying,
     preloadAudio, clipAtPoint, clipBox, visibleClips, trackStates, fadeFactor, placement, drawFrame, debugVideos, renderMix, audioEntries,
+    meters, measureMix, mixVoice, liveMix,
   };
 })();

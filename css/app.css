@@ -132,6 +132,33 @@ input[type=text], input[type=number], select {
 input[type=range] { width: 100%; accent-color: var(--accent); }
 input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 
+/* ミキサー・録音 */
+#viewer { position: relative; }
+.mixer { position: absolute; left: 8px; right: 8px; bottom: 8px; max-height: calc(100% - 16px); overflow: auto; z-index: 10;
+  background: rgba(24,26,31,0.96); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; box-shadow: 0 6px 30px rgba(0,0,0,0.5); }
+.mx-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.mx-head .hint { margin-left: 4px; }
+.mx-row { display: grid; grid-template-columns: 64px 34px 34px 1fr 1fr 120px; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid #2a2e36; }
+.mx-row.master { grid-template-columns: 64px 1fr 1fr 120px; }
+.mx-name { font-weight: 700; font-size: 13px; }
+.mx-ctl { display: grid; grid-template-columns: auto 1fr 64px; gap: 6px; align-items: center; font-size: 12px; }
+.mx-ctl.lim { grid-template-columns: auto auto 64px auto; justify-content: start; }
+.mx-ctl small { color: var(--muted); }
+.mx-val { font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.mx-num { width: 64px !important; }
+.mx-btn { min-height: 30px; padding: 0; font-weight: 700; }
+.mx-btn.mute.on { background: #b94a3f; border-color: #d9534f; }
+.mx-btn.solo.on { background: #c9a227; border-color: #e0b030; color: #1d1d1f; }
+.mx-meter { width: 120px; height: 10px; border-radius: 3px; }
+button.rec { color: #ff6b6b; }
+button.rec.on { background: #8a2420; border-color: #d9534f; color: #fff; }
+@media (max-width: 1060px), (orientation: portrait) {
+  .mx-row { grid-template-columns: 52px 30px 30px 1fr 90px; }
+  .mx-row .pan { grid-column: 4 / 5; }
+  .mx-row.master { grid-template-columns: 52px 1fr 90px; }
+  .mx-meter { width: 90px; }
+}
+
 /* キーフレーム・色 */
 button.kf { min-height: 22px; width: 22px; padding: 0; margin-right: 4px; font-size: 11px; line-height: 1; background: #2a2e36; color: #666; border-color: #444; vertical-align: middle; }
 button.kf.has { color: #b59a3a; }

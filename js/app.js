@@ -90,6 +90,7 @@ const App = (() => {
     Timeline.draw();
     Engine.refresh();
     Inspector.show(Timeline.primaryClip() ? Timeline.primaryClip().id : null);
+    Mixer.refresh();
     updateUi();
     markDirty();
   }
@@ -224,6 +225,7 @@ const App = (() => {
     Engine.setProject(P);
     Timeline.setProject(P);
     Inspector.setProject(P);
+    Mixer.setProject(P);
     renderBin();
     badge('saved');
     requestAnimationFrame(() => { Engine.resize(); Timeline.resize(); Timeline.fitAll(); });
@@ -235,7 +237,9 @@ const App = (() => {
 
   async function closeProject() {
     if (!P) return;
+    if (Recorder.active()) await Recorder.stop();
     Engine.stop();
+    Mixer.toggle(false);
     await save();
     Engine.setProject(null);
     Media.release();
@@ -569,6 +573,102 @@ const App = (() => {
     });
   }
 
+  // ---- 音声 --------------------------------------------------------------------
+  /** 選んだ音声クリップを目標のラウドネスへ（exe の normalize_loudness。同じ素材はまとめて測る） */
+  async function normalizeSelected(target) {
+    const clips = Timeline.selected().map((id) => P.clips[id]).filter((c) => c && c.media && Proj.track(P, c.track).kind === 'audio');
+    if (!clips.length) { toast('音声トラックのクリップを選んでください'); return; }
+    const pb = progressBox('ラウドネスを測っています');
+    let res;
+    try { res = await AudioFx.measureClips(P, clips, true); } finally { pb.close(); }
+    const plan = res.filter((r) => r.lufs !== null);
+    if (!plan.length) { toast('音が小さすぎて測れませんでした'); return; }
+    edit(`ラウドネスを ${target} LUFS に`, () => {
+      for (const r of plan) {
+        const gain = target - r.lufs;
+        for (const c0 of r.clips) {
+          const c = P.clips[c0.id];
+          if (!c) continue;
+          const old = c.volume_db;
+          c.volume_db = clamp(gain, -96, 24);
+          // 音量のキーがあれば形を保って全体をずらす
+          if (c.keys && c.keys.volume_db) c.keys = { ...c.keys, volume_db: c.keys.volume_db.map((k) => [k[0], k[1] + c.volume_db - old, k[2]]) };
+        }
+      }
+    });
+    toast(plan.map((r) => `${r.lufs.toFixed(1)} LUFS → ${target}（${(target - r.lufs > 0 ? '+' : '') + (target - r.lufs).toFixed(1)} dB）`).join('　'), 5000);
+  }
+
+  /** ノイズ除去など重い処理を、選んだ時点で進み具合を出しながら済ませておく */
+  async function prepareFx(c0) {
+    const c = P.clips[c0.id];
+    if (!c || !AudioFx.hasFx(c.afx)) return;
+    const pb = progressBox('音を処理しています');
+    try { await AudioFx.processed(c.media, c.afx, (r) => pb.set('ノイズを取っています', r)); toast('処理しました'); } catch (err) { toast('処理できませんでした: ' + err.message); } finally { pb.close(); }
+    Engine.refresh();
+  }
+
+  async function duckDialog() {
+    const auds = P.tracks.filter((t) => t.kind === 'audio');
+    if (auds.length < 2) { toast('声と音楽の 2 つの音声トラックが要ります（BGM を A2 などに置いてください）'); return; }
+    const d = { ...AudioFx.DUCK_DEFAULT, ...(P.ducking || {}) };
+    const tsel = (cur, def) => h('select', null, ...auds.map((t) => h('option', { value: t.id, selected: (cur && cur.length ? cur[0] : def) === t.id }, t.name)));
+    const on = h('input', { type: 'checkbox', checked: !!d.on });
+    const voice = tsel(d.voice, auds[0].id), music = tsel(d.music, auds[auds.length - 1].id);
+    const num = (v, min, max, step) => h('input', { type: 'number', min, max, step, value: v, inputmode: 'decimal' });
+    const amount = num(d.amount, 0.5, 60, 0.5), threshold = num(d.threshold, -80, -5, 1), release = num(d.release, 0.05, 5, 0.05);
+    const body = h('div', { class: 'form two' },
+      h('label', { class: 'inline wide' }, on, '声が入っている間、音楽を自動で下げる'),
+      h('label', null, '声のトラック', voice), h('label', null, '音楽のトラック', music),
+      h('label', null, '下げる量（dB）', amount), h('label', null, '声と見なす大きさ（dBFS）', threshold),
+      h('label', null, '戻る速さ（秒）', release),
+      h('p', { class: 'hint wide' }, '声の大きさで決まった計算をするので、どこから再生しても書き出しても同じ音になります。'));
+    const ok = await showDialog({ title: 'BGM の自動ダッキング', body, buttons: [{ label: 'やめる', value: false }, { label: '決める', value: true, primary: true }] });
+    if (!ok) return;
+    if (voice.value === music.value && on.checked) { toast('声と音楽に同じトラックは選べません'); return; }
+    edit('BGM の自動ダッキング', () => {
+      P.ducking = {
+        ...d, on: on.checked, voice: [voice.value], music: [music.value],
+        amount: clamp(Number(amount.value) || 12, 0.5, 60), threshold: clamp(Number(threshold.value) || -40, -80, -5), release: clamp(Number(release.value) || 0.4, 0.05, 5),
+      };
+    });
+    Engine.preloadAudio();
+    Mixer.refresh();
+  }
+
+  async function toggleRecord() {
+    const btn = $('#btnRec');
+    if (!Recorder.active()) {
+      try {
+        await Recorder.start(Math.round(Engine.position()), (on, sec) => {
+          btn.classList.toggle('on', on);
+          btn.textContent = on ? `■ 停止 ${fmtDur(sec)}` : '● 録音';
+        });
+        toast('録音しています（イヤホンを使うとスピーカーの音が入りません）', 3000);
+      } catch (err) {
+        toast('録音を始められませんでした: ' + (err.message || err), 4000);
+      }
+      return;
+    }
+    const r = await Recorder.stop();
+    if (!r || !r.file.size) { toast('録音できませんでした'); return; }
+    const pb = progressBox('録音を読み込んでいます');
+    let rec;
+    try { rec = await Media.importFile(r.file, (t, x) => pb.set(t, x)); } catch (err) { pb.close(); toast('録音を読み込めませんでした: ' + err.message, 4000); return; } finally { pb.close(); }
+    let placed = [];
+    edit('ナレーションを置く', () => {
+      P.media[rec.id] = Media.projectInfo(rec);
+      const m = P.media[rec.id];
+      const trimF = Math.round(r.trim * Proj.fps(P));
+      const dur = Math.max(1, Proj.mediaFrames(P, m) - trimF);
+      const tid = Proj.freeTrack(P, 'audio', r.frame, r.frame + dur);
+      placed = [Proj.addClip(P, { id: uid('c'), track: tid, start: r.frame, duration: dur, media: m.id, src_in: r.trim, name: m.name }, false)];
+    });
+    renderBin();
+    Timeline.select(placed.map((c) => c.id), placed[0] && placed[0].id);
+    toast('ナレーションを置きました');
+  }
+
   function previewClip(c) {
     Engine.pause();
     seek(c.start);
@@ -825,7 +925,7 @@ const App = (() => {
     });
     Inspector.init($('#inspector'), {
       begin, live, end, edit, settings: settingsDialog, preview: previewClip, subtitleStyle: subtitleStyleDialog,
-      playhead: () => Engine.position(), seek: (f) => { Engine.pause(); seek(f); }, importLut,
+      playhead: () => Engine.position(), seek: (f) => { Engine.pause(); seek(f); }, importLut, normalize: normalizeSelected, prepareFx,
     });
     Grade.onLoaded = () => { Engine.refresh(); Inspector.refresh(); };
     // カタログは先に読んでおく（テロップの描き方・モーションに要る）
@@ -862,6 +962,9 @@ const App = (() => {
     on('#btnText', addText);
     on('#btnSubs', subtitleMenu);
     on('#btnFill', addFill);
+    on('#btnMixer', () => Mixer.toggle());
+    on('#btnRec', toggleRecord);
+    Mixer.init($('#mixer'), { begin, end, edit, duck: duckDialog });
     $('#srtInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f && P) importSrt(f); });
     on('#btnSplit', split);
     on('#btnDelete', () => remove(false));

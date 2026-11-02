@@ -540,7 +540,21 @@ const Timeline = (() => {
     g.save();
     g.clip();
     if (!c.enabled) g.globalAlpha *= 0.4;
-    if (kind === 'audio') drawWave(c, x0, x1, y, h, cx0, cx1);
+    if (kind === 'audio') {
+      drawWave(c, x0, x1, y, h, cx0, cx1);
+      // 音量のキーの線（−40〜+12 dB を下から上へ）
+      const vk = c.keys && c.keys.volume_db;
+      if (vk && vk.length) {
+        const yOf = (db) => y + h - 3 - clamp((db + 40) / 52, 0, 1) * (h - 20);
+        g.strokeStyle = '#ffd23f';
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.moveTo(x0, yOf(Keys.volumeDbAt(c, 0)));
+        for (const k of vk) if (k[0] >= 0 && k[0] <= c.duration) g.lineTo(x0 + k[0] * ppf, yOf(k[1]));
+        g.lineTo(x1, yOf(Keys.volumeDbAt(c, c.duration)));
+        g.stroke();
+      }
+    }
     else if (c.media) drawThumbs(c, x0, x1, y, h, cx0, cx1);
     else if (c.fill) {
       g.fillStyle = c.fill;
@@ -559,7 +573,8 @@ const Timeline = (() => {
     g.font = '11px -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif';
     g.textBaseline = 'middle';
     const label = c.name || (c.text ? (kind === 'sub' ? '字幕' : 'テキスト') + (c.motion ? ' ★' : '') + ((c.style || {}).speaker ? '・' + c.style.speaker : '') : '') || (p.media[c.media] && p.media[c.media].name) || '';
-    g.fillText(label + (c.speed !== 1 ? `（${c.speed}倍）` : ''), Math.max(x0, HEAD_W) + 5, y + 8);
+    const fx = c.afx && (c.afx.eq || c.afx.comp || c.afx.denoise) ? '  FX' : '';
+    g.fillText(label + (c.speed !== 1 ? `（${c.speed}倍）` : '') + fx + (c.volume_db ? `  ${c.volume_db > 0 ? '+' : ''}${Math.round(c.volume_db * 10) / 10}dB` : ''), Math.max(x0, HEAD_W) + 5, y + 8);
     // フェードの斜線
     g.strokeStyle = 'rgba(255,255,255,0.7)';
     g.lineWidth = 1;
