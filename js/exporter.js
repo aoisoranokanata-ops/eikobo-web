@@ -49,6 +49,40 @@ const Exporter = (() => {
     return { ids, frames, pixels };
   }
 
+  // ---- 前回の設定・かかる時間の見積もり --------------------------------------------------------
+  // 書き出しの設定（大きさ・画質・AI・字幕）は前回のものを使う。大きさは出力の短い辺で覚える（作品ごとに選べる値が違うため）。
+  const PREF_KEY = 'eikobo-web:export';
+  // AI 以外（描く・I420・H.264・音声）にかかる秒を、出力 1 画素 1 コマあたりで覚える（書き出しのたびに直す）
+  const SPEED_KEY = 'eikobo-web:export-speed';
+  const BASE_GUESS = 9e-9;          // 測る前の目安: PC の Chrome で 1080p が実時間の約 2 倍
+  const loadLs = (k) => { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch { return {}; } };
+  const saveLs = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 覚えられなくても使える */ } };
+  function learnBase(sec, px) {
+    if (!(sec > 0) || px < 1920 * 1080 * 15) return;      // 短すぎると準備の時間ばかりになる
+    const sp = loadLs(SPEED_KEY);
+    const v = sec / px;
+    saveLs(SPEED_KEY, { perPx: sp.perPx > 0 ? sp.perPx * 0.5 + v * 0.5 : v });
+  }
+  /** 書き出しにかかる秒の見積もり。{total, ai, measured} */
+  function estimateTime(P, a, b, w, hh, ai) {
+    const sp = loadLs(SPEED_KEY);
+    const base = (b - a) * w * hh * (sp.perPx > 0 ? sp.perPx : BASE_GUESS);
+    let aiSec = 0;
+    if (ai) {
+      const t = aiTargets(P, a, b, w, ai.all);
+      if (t.frames) aiSec = AiEnhance.estimate(t.pixels, ai.kind);
+    }
+    return { total: base + aiSec, ai: aiSec, measured: sp.perPx > 0 && (!aiSec || AiEnhance.measured()) };
+  }
+  /** 秒 → 「約 40 秒」「約 3 分 20 秒」「約 1 時間 5 分」 */
+  function fmtSpan(sec) {
+    let s = Math.max(1, Math.round(sec));
+    if (s > 90) s = Math.round(s / 10) * 10;          // 長い時は 10 秒単位
+    if (s < 60) return `約 ${s} 秒`;
+    if (s < 3600) return `約 ${Math.floor(s / 60)} 分${s % 60 ? ` ${s % 60} 秒` : ''}`;
+    return `約 ${Math.floor(s / 3600)} 時間 ${Math.round((s % 3600) / 60)} 分`;
+  }
+
   function bitrateFor(q, w, h, fps) {
     const base = QUALITY[q][1];
     return Math.round(clamp(base * (w * h * fps) / (1920 * 1080 * 30), 1.5e6, 80e6));
@@ -101,10 +135,13 @@ const Exporter = (() => {
       const [w, hh] = outSize(P, l);
       sizes.push([String(l), `${w} × ${hh}（${l}p${l > short ? '・拡大' : ''}）`]);
     }
-    const size = h('select', null, ...sizes.map(([v, t]) => h('option', { value: v }, t)));
+    const pref = loadLs(PREF_KEY);
+    const shortOf = (v) => Math.min(...outSize(P, v));
+    const prefSize = (sizes.find(([v]) => pref.short && shortOf(v) === pref.short) || sizes[0])[0];
+    const size = h('select', null, ...sizes.map(([v, t]) => h('option', { value: v, selected: v === prefSize }, t)));
     // AI 高画質化
-    const aiKind = h('select', null, h('option', { value: '' }, 'しない'), ...Object.entries(AiEnhance.MODELS).map(([k2, [, t]]) => h('option', { value: k2 }, t)));
-    const aiAll = h('input', { type: 'checkbox' });
+    const aiKind = h('select', null, h('option', { value: '' }, 'しない'), ...Object.entries(AiEnhance.MODELS).map(([k2, [, t]]) => h('option', { value: k2, selected: k2 === pref.ai }, t)));
+    const aiAll = h('input', { type: 'checkbox', checked: !!pref.aiAll });
     const aiNote = h('p', { class: 'hint' });
     const aiTry = h('button', { type: 'button', class: 'block', disabled: true }, '今のコマで試す（AI あり・なしを比べる）');
     const aiBox = h('div', { class: 'ai-box' },
@@ -113,16 +150,23 @@ const Exporter = (() => {
       aiTry, aiNote);
     let gpu = null;
     AiEnhance.support().then((g) => { gpu = g; update(); });
-    const quality = h('select', null, ...Object.entries(QUALITY).map(([k, [t]]) => h('option', { value: k, selected: k === 'std' }, t)));
+    const qPref = QUALITY[pref.quality] ? pref.quality : 'std';
+    const quality = h('select', null, ...Object.entries(QUALITY).map(([k, [t]]) => h('option', { value: k, selected: k === qPref }, t)));
     const hasSubs = Proj.subtitleClips(P).length > 0;
-    const subs = h('input', { type: 'checkbox', checked: true });
+    const subs = h('input', { type: 'checkbox', checked: pref.subs !== false });
     const est = h('p', { class: 'hint' });
+    const timeEst = h('p', { class: 'export-time' });
     const update = () => {
       const [w, hh] = outSize(P, size.value);
       const r = range.value === 'sel' ? selRange : [0, total];
       const sec = (r[1] - r[0]) / fps;
       const bytes = (bitrateFor(quality.value, w, hh, fps) + 192000) / 8 * sec;
       est.textContent = `${w} × ${hh}・${Math.round(fps * 1000) / 1000} fps・H.264　だいたい ${fmtBytes(bytes)}`;
+      // かかる時間（AI が使えない端末では AI 抜きで）
+      const aiOn = aiKind.value && !(gpu && !gpu.webgpu) ? { kind: aiKind.value, all: aiAll.checked } : null;
+      const te = estimateTime(P, r[0], r[1], w, hh, aiOn);
+      timeEst.textContent = `書き出しにかかる時間: ${fmtSpan(te.total)}${te.ai ? `（うち AI ${fmtSpan(te.ai)}）` : ''}`;
+      timeEst.append(h('span', { class: 'hint' }, te.measured ? '　この端末で測った速さから' : '　目安です（一度書き出すと、この端末の速さで出します）'));
       // AI の説明
       if (gpu && !gpu.webgpu) {
         aiKind.disabled = true; aiAll.disabled = true; aiTry.disabled = true;
@@ -137,8 +181,8 @@ const Exporter = (() => {
         aiNote.textContent = aiAll.checked ? 'この範囲に 1280×720 以下の動画がありません（それより大きい動画には掛けられません）。'
           : 'この範囲に、この大きさで拡大される動画がありません。大きさを上げるか「拡大しない動画にも掛ける」を選んでください。';
       } else {
-        const aiSec = AiEnhance.estimate(t.pixels / t.frames, aiKind.value) * t.frames;
-        aiNote.textContent = `動画 ${t.ids.size} 本・${fmtTC(t.frames, fps)} に掛けます。AI の分だけで およそ ${fmtDur(aiSec)}（端末で大きく変わります。「今のコマで試す」で測ると正確になります）。`;
+        aiNote.textContent = `動画 ${t.ids.size} 本・${fmtTC(t.frames, fps)} に掛けます。`
+          + (AiEnhance.measured() ? '' : 'AI の速さは端末で大きく変わります。「今のコマで試す」で測ると、上の時間がこの端末に合います。');
       }
     };
     [range, size, quality, aiKind, aiAll].forEach((s) => s.addEventListener('change', update));
@@ -156,11 +200,14 @@ const Exporter = (() => {
       hasSubs ? h('label', { class: 'inline' }, subs, '字幕を動画に入れる（焼き込み）') : null,
       est,
       aiBox,
+      timeEst,
       h('p', { class: 'hint' }, '書き出し中は画面を開いたままにしてください（他のアプリに切り替えると止まります）。'));
     const ok = await showDialog({ title: '書き出し（MP4）', body, buttons: [{ label: 'やめる', value: false }, { label: '書き出す', value: true, primary: true }] });
     if (!ok) return;
     const r = range.value === 'sel' ? selRange : [0, total];
     const [w, hh] = outSize(P, size.value);
+    // 次の書き出しのために覚える（AI は使えない端末でも選んだ種類を覚えておく）
+    saveLs(PREF_KEY, { short: Math.min(w, hh), quality: quality.value, ai: aiKind.value, aiAll: aiAll.checked, subs: hasSubs ? subs.checked : pref.subs !== false });
     const ai = aiKind.value && !aiKind.disabled ? { kind: aiKind.value, all: aiAll.checked } : null;
     await run(P, { a: r[0], b: r[1], width: w, height: hh, bitrate: bitrateFor(quality.value, w, hh, fps), subtitles: !hasSubs || subs.checked, ai });
   }
@@ -175,8 +222,9 @@ const Exporter = (() => {
     const aiCanvas = new Map();      // クリップ ID → {key, canvas}（同じ素材のコマは描き直さない）
     const aiIds = o.ai ? aiTargets(P, o.a, o.b, o.width, o.ai.all).ids : new Set();
     const k = o.width / P.width;
-    return {
+    const pt = {
       aiIds,
+      aiSec: 0,                      // AI にかかった秒（書き出しの速さを覚える時に引く）
       async prepare() {
         for (const c of Object.values(P.clips)) {
           const m = c.media && P.media[c.media];
@@ -205,7 +253,12 @@ const Exporter = (() => {
             const key = Math.round(t * (m.fps || 30));
             let e = aiCanvas.get(c.id);
             if (!e) { e = { key: null, canvas: document.createElement('canvas') }; aiCanvas.set(c.id, e); }
-            if (e.key !== key) { await AiEnhance.enhance(f.img, f.w, f.h, o.ai.kind, e.canvas); e.key = key; }
+            if (e.key !== key) {
+              const t0 = performance.now();
+              await AiEnhance.enhance(f.img, f.w, f.h, o.ai.kind, e.canvas);
+              pt.aiSec += (performance.now() - t0) / 1000;
+              e.key = key;
+            }
             f = { img: e.canvas, w: f.w, h: f.h, rot: f.rot, iw: e.canvas.width, ih: e.canvas.height };
           }
           frames.set(c.id, f);
@@ -226,6 +279,7 @@ const Exporter = (() => {
         aiCanvas.clear();
       },
     };
+    return pt;
   }
 
   /** 「今のコマで試す」: 出力の大きさで AI あり・なしを描いて、真ん中を等倍で比べる */
@@ -457,6 +511,7 @@ const Exporter = (() => {
         pb.set('AI を準備しています（初めての時は部品を読み込みます）', 0);
         await AiEnhance.session(o.ai.kind);
       }
+      const tWork = performance.now();     // ここから（AI の部品の読み込みを除いて）の時間で速さを覚える
 
       // 音声
       pb.set('音声を混ぜています', 0);
@@ -565,6 +620,7 @@ const Exporter = (() => {
       const file = new File([head, body], name, { type });
       pb.close();
       const sec = (performance.now() - t0) / 1000;
+      learnBase((performance.now() - tWork) / 1000 - painter.aiSec, n * o.width * o.height);
       deliver(file, sec, mov, n / fps, aInfo);
       return file;
     } catch (err) {

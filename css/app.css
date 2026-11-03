@@ -276,3 +276,7 @@ button.accent { background: #5a3a22; border-color: #bf6a37; }
 .gd-setup li input { margin: 2px 0 6px; }
 .gd-field { display: grid; gap: 4px; font-size: 13px; color: #c4c8d0; margin-bottom: 8px; }
 .gd-kami { color: var(--warn); }
+
+/* 書き出しにかかる時間（js/exporter.js） */
+.export-time { margin: 2px 0 0; font-size: 14px; font-weight: 600; }
+.export-time .hint { font-weight: 400; }

@@ -8,7 +8,7 @@
    ネットワーク優先。iPad のホーム画面アプリでは待機中の SW が切り替わらないことがあるので、待機させない。
    ファイルを直したら、下の VERSION と js/util.js の APP_VERSION を必ず上げること。
    ------------------------------------------------------------ */
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 const PREFIX = 'eikobo-web-';
 const CACHE = PREFIX + 'v' + VERSION;
 // AI の部品（vendor/ の onnxruntime・models/ の重み、合わせて約 45MB）は版をまたいで取っておく別のキャッシュ。

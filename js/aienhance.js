@@ -18,6 +18,7 @@ const AiEnhance = (() => {
   const MAX_PIXELS = 1280 * 720;
   const TILE = 640, PAD = 12, SCALE = 4;     // 640×480 は 1 回で（区切るより少し速い）
   let ortP = null, gpuInfo = null, sess = null, sessKey = '';
+  let warm = false;                // 作ったばかりの session の 1 回目は GPU の準備が入るので、速さを測らない
 
   function loadOrt() {
     if (ortP) return ortP;
@@ -65,6 +66,7 @@ const AiEnhance = (() => {
     const file = `models/${MODELS[kind][0]}${g.f16 ? '_fp16' : ''}.onnx`;
     sess = await o.InferenceSession.create(file, { executionProviders: ['webgpu'] });
     sessKey = key;
+    warm = false;
     return sess;
   }
 
@@ -124,14 +126,34 @@ const AiEnhance = (() => {
         og.putImageData(img, x0 * SCALE, y0 * SCALE);
       }
     }
-    learn(w * h, (performance.now() - t0) / 1000);
+    if (warm) learn(w * h, (performance.now() - t0) / 1000, kind);
+    warm = true;
     return oc;
   }
 
-  /** 書き出しの見積もり: 素材の画素数 × 1 画素あたりの秒（最初に測った値。無ければ目安） */
-  let secPerPixel = null;
-  const estimate = (pixels, kind) => pixels * (secPerPixel || (kind === 'anime' ? 1.0e-6 : 1.8e-6));
-  const learn = (pixels, sec) => { const v = sec / Math.max(1, pixels); secPerPixel = secPerPixel ? secPerPixel * 0.8 + v * 0.2 : v; };
+  // ---- 速さ（書き出しの時間の見積もり） ----------------------------------------------------
+  // 素材 1 画素あたりの秒を、モデルごとにこの端末で測って localStorage に覚える（書き出し・「今のコマで試す」のたびに少しずつ直す）。
+  // 測っていないモデルは、測ったモデルから速さの比で出す（GTX 1660S: general 0.55 秒・anime 0.32 秒 / 640×480）。
+  const SPEED_KEY = 'eikobo-web:ai-speed';
+  const RATIO = { general: 1, light: 1, anime: 0.58 };
+  const GUESS = 1.8e-6;                    // 測る前の目安（PC の Chrome）
+  let speed = {};
+  try { speed = JSON.parse(localStorage.getItem(SPEED_KEY) || '{}') || {}; } catch { speed = {}; }
+  function perPixel(kind) {
+    if (speed[kind] > 0) return speed[kind];
+    for (const k of Object.keys(RATIO)) if (speed[k] > 0) return speed[k] * RATIO[kind] / RATIO[k];
+    return GUESS * (RATIO[kind] || 1);
+  }
+  /** この端末で測った速さがあるか（無ければ見積もりは目安） */
+  const measured = () => Object.keys(RATIO).some((k) => speed[k] > 0);
+  /** 素材の画素数（コマの数 × 幅 × 高さ）→ AI にかかる秒 */
+  const estimate = (pixels, kind) => pixels * perPixel(kind);
+  function learn(pixels, sec, kind) {
+    if (!(sec > 0) || !RATIO[kind]) return;
+    const v = sec / Math.max(1, pixels);
+    speed[kind] = speed[kind] > 0 ? speed[kind] * 0.8 + v * 0.2 : v;
+    try { localStorage.setItem(SPEED_KEY, JSON.stringify(speed)); } catch { /* 覚えられなくても使える */ }
+  }
 
-  return { MODELS, MAX_PIXELS, SCALE, support, fits, session, release, enhance, estimate, learn, loadOrt };
+  return { MODELS, MAX_PIXELS, SCALE, support, fits, session, release, enhance, estimate, measured, learn, loadOrt };
 })();
